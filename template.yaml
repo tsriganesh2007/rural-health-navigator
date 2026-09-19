@@ -23,6 +23,11 @@ Globals:
     MemorySize: 256
     LoggingConfig:
       LogFormat: JSON
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
 
 Resources:
   FacilitiesTable:
@@ -88,6 +93,66 @@ Resources:
           Properties:
             Path: /triage
             Method: POST
+
+  TriageContactFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: triage-contact/
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TRIAGE_SESSIONS_TABLE_NAME: !Ref TriageSessionsTable
+          TRIAGE_NOTIFICATIONS_TOPIC_ARN: !Ref TriageNotificationTopic
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt TriageSessionsTable.Arn
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref TriageNotificationTopic
+      Events:
+        TriageContact:
+          Type: Api
+          Properties:
+            Path: /triage/contact
+            Method: POST
+
+  FacilityLookupFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: facility-lookup/
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          FACILITIES_TABLE_NAME: !Ref FacilitiesTable
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !GetAtt FacilitiesTable.Arn
+      Events:
+        FacilityLookup:
+          Type: Api
+          Properties:
+            Path: /facilities/available
+            Method: GET
 
   WorkerStatusFunction:
     Type: AWS::Serverless::Function
@@ -188,6 +253,12 @@ Outputs:
   TriageAPI:
     Description: API Gateway endpoint URL for Prod environment for POST /triage
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/triage/"
+  TriageContactAPI:
+    Description: API Gateway endpoint URL for Prod environment for POST /triage/contact
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/triage/contact/"
+  FacilityLookupAPI:
+    Description: API Gateway endpoint URL for Prod environment for GET /facilities/available
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/facilities/available/"
   WorkerStatusAPI:
     Description: API Gateway endpoint URL for Prod environment for POST /worker/status
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/worker/status/"
@@ -200,6 +271,12 @@ Outputs:
   TriageFunction:
     Description: Triage Lambda Function ARN
     Value: !GetAtt TriageFunction.Arn
+  TriageContactFunction:
+    Description: Triage contact Lambda Function ARN
+    Value: !GetAtt TriageContactFunction.Arn
+  FacilityLookupFunction:
+    Description: Facility lookup Lambda Function ARN
+    Value: !GetAtt FacilityLookupFunction.Arn
   WorkerStatusFunction:
     Description: Worker status Lambda Function ARN
     Value: !GetAtt WorkerStatusFunction.Arn

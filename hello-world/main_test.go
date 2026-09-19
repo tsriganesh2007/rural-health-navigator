@@ -111,8 +111,11 @@ func TestHandlerSuccessPersistsAndPublishes(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Urgency != "visit_soon" || got.AdviceText != "See a clinician soon." {
+	if got.SessionID != "sess-fixed-1" || got.Urgency != "visit_soon" || got.AdviceText != "See a clinician soon." {
 		t.Fatalf("unexpected body: %+v", got)
+	}
+	if got.ContactDoctorRequested {
+		t.Fatalf("expected contactDoctorRequested=false by default, got true")
 	}
 
 	if store.calls != 1 {
@@ -124,6 +127,9 @@ func TestHandlerSuccessPersistsAndPublishes(t *testing.T) {
 	if store.last.SymptomsText != symptoms {
 		t.Fatalf("expected symptoms persisted, got %q", store.last.SymptomsText)
 	}
+	if store.last.ContactDoctorRequested {
+		t.Fatalf("expected persisted contactDoctorRequested=false")
+	}
 
 	if pub.calls != 1 {
 		t.Fatalf("notifier calls=%d want=1", pub.calls)
@@ -131,11 +137,81 @@ func TestHandlerSuccessPersistsAndPublishes(t *testing.T) {
 	if pub.last.SessionID != "sess-fixed-1" || pub.last.District != "Cuttack" || pub.last.Urgency != "visit_soon" {
 		t.Fatalf("unexpected notification: %+v", pub.last)
 	}
+	if pub.last.ContactDoctorRequested {
+		t.Fatalf("expected SNS contactDoctorRequested=false")
+	}
 	if strings.Contains(pub.raw, symptoms) || strings.Contains(pub.raw, "symptomsText") {
 		t.Fatalf("SNS payload must not include symptoms: %s", pub.raw)
 	}
 	if !strings.Contains(pub.raw, `"sessionId"`) || !strings.Contains(pub.raw, `"district"`) || !strings.Contains(pub.raw, `"urgency"`) {
 		t.Fatalf("SNS payload missing required fields: %s", pub.raw)
+	}
+	if !strings.Contains(pub.raw, `"contactDoctorRequested":false`) {
+		t.Fatalf("SNS payload missing contactDoctorRequested: %s", pub.raw)
+	}
+}
+
+func TestHandlerLowUrgencyWithDoctorRequest(t *testing.T) {
+	store, pub := setupHappyPathMocks()
+	aiClient = &mockGemini{text: `{"urgency":"self_care","adviceText":"Rest and hydrate."}`}
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"symptomsText":"mild cold","district":"Puri","contactDoctorRequested":true}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+
+	var got triageResponse
+	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Urgency != "self_care" {
+		t.Fatalf("urgency must stay self_care, got %q", got.Urgency)
+	}
+	if !got.ContactDoctorRequested {
+		t.Fatalf("expected contactDoctorRequested=true")
+	}
+	if !store.last.ContactDoctorRequested || store.last.Urgency != "self_care" {
+		t.Fatalf("unexpected persisted session: %+v", store.last)
+	}
+	if !pub.last.ContactDoctorRequested || pub.last.Urgency != "self_care" {
+		t.Fatalf("unexpected SNS: %+v", pub.last)
+	}
+	if strings.Contains(pub.raw, "symptomsText") {
+		t.Fatalf("SNS must not include symptoms: %s", pub.raw)
+	}
+}
+
+func TestHandlerEmergencyIgnoresDoctorRequest(t *testing.T) {
+	store, pub := setupHappyPathMocks()
+	aiClient = &mockGemini{text: `{"urgency":"emergency","adviceText":"Seek emergency care immediately."}`}
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"symptomsText":"severe chest pain","district":"Khordha","contactDoctorRequested":true}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+
+	var got triageResponse
+	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Urgency != "emergency" {
+		t.Fatalf("urgency=%q", got.Urgency)
+	}
+	if got.ContactDoctorRequested {
+		t.Fatalf("emergency must not set contactDoctorRequested")
+	}
+	if store.last.ContactDoctorRequested || pub.last.ContactDoctorRequested {
+		t.Fatalf("emergency must persist/publish contactDoctorRequested=false")
 	}
 }
 

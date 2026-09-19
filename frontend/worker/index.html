@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Worker Console — Rural Health Navigator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div>
+      <p class="brand">Worker Console</p>
+      <p class="tagline">Rural Health Access Navigator</p>
+    </div>
+    <p class="demo-badge">Demo worker login — not production auth</p>
+  </header>
+
+  <main>
+    <section class="panel" id="login-section">
+      <h1>Demo worker login</h1>
+      <p class="hint">Use the demo credentials below. This is only a simple gate for the hackathon demo — not secure authentication.</p>
+
+      <div class="demo-creds">
+        <p><strong>DEMO credentials</strong></p>
+        <ul>
+          <li>worker1 / demo123</li>
+          <li>worker2 / demo123</li>
+        </ul>
+      </div>
+
+      <form id="login-form">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" required />
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="login-error" class="error" hidden></p>
+    </section>
+
+    <section id="dashboard" hidden>
+      <div class="toolbar">
+        <p>Signed in as <strong id="worker-name"></strong></p>
+        <div class="toolbar-actions">
+          <button type="button" id="refresh-btn" class="secondary">Refresh</button>
+          <button type="button" id="logout-btn" class="secondary">Log out</button>
+        </div>
+      </div>
+
+      <section class="panel">
+        <h2>Triage queue</h2>
+        <p id="queue-status" class="muted">Loading queue…</p>
+        <div id="queue-list" class="queue-list"></div>
+      </section>
+
+      <section class="panel facility-panel">
+        <h2>Update facility status</h2>
+        <p class="hint">Facility must already exist in DynamoDB. Status updates use POST /worker/status.</p>
+        <form id="facility-form">
+          <label for="facility-id">Facility ID</label>
+          <input id="facility-id" name="facilityId" required placeholder="e.g. fac-puri-1" />
+
+          <fieldset>
+            <legend>Open</legend>
+            <label class="inline"><input type="radio" name="statusOpen" value="true" checked /> Open</label>
+            <label class="inline"><input type="radio" name="statusOpen" value="false" /> Closed</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Doctor</legend>
+            <label class="inline"><input type="radio" name="statusHasDoctor" value="true" checked /> Available</label>
+            <label class="inline"><input type="radio" name="statusHasDoctor" value="false" /> Unavailable</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Medicine</legend>
+            <label class="inline"><input type="radio" name="statusHasMedicine" value="true" checked /> Available</label>
+            <label class="inline"><input type="radio" name="statusHasMedicine" value="false" /> Unavailable</label>
+          </fieldset>
+
+          <button type="submit">Update facility status</button>
+        </form>
+        <p id="facility-msg" class="success" hidden></p>
+        <p id="facility-error" class="error" hidden></p>
+      </section>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

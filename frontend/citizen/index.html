@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rural Health Access Navigator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <p class="brand">Rural Health Access Navigator</p>
+    <p class="tagline">Guidance for rural communities — not a diagnosis</p>
+  </header>
+
+  <main>
+    <section class="panel" id="triage-form-section">
+      <h1>Describe how you feel</h1>
+      <p class="hint">Share your symptoms and district. A care worker may follow up if needed.</p>
+
+      <form id="triage-form">
+        <label for="symptoms">Symptoms</label>
+        <textarea id="symptoms" name="symptoms" rows="5" required
+          placeholder="Example: mild fever and cough for two days"></textarea>
+
+        <label for="district">District</label>
+        <select id="district" name="district" required>
+          <option value="">Select district</option>
+          <option value="Puri">Puri</option>
+          <option value="Cuttack">Cuttack</option>
+          <option value="Khordha">Khordha</option>
+          <option value="Ganjam">Ganjam</option>
+          <option value="Balasore">Balasore</option>
+        </select>
+
+        <button type="submit" id="submit-btn">Get guidance</button>
+      </form>
+      <p id="form-error" class="error" hidden></p>
+    </section>
+
+    <section class="panel result" id="result-section" hidden>
+      <h2>Your guidance</h2>
+      <p class="meta">Request ID: <span id="session-id"></span></p>
+
+      <div id="emergency-banner" class="emergency-banner" hidden>
+        <strong>Seek emergency medical care immediately.</strong>
+        <p>Do not wait for an app response. Go to the nearest emergency facility or call local emergency services now.</p>
+      </div>
+
+      <dl class="result-grid">
+        <dt>Urgency</dt>
+        <dd id="urgency"></dd>
+        <dt>Advice</dt>
+        <dd id="advice"></dd>
+      </dl>
+
+      <div id="facility-block" class="facility-block">
+        <h3>Available facility nearby</h3>
+        <p id="facility-status" class="muted">Looking up open, doctor-staffed facilities…</p>
+        <dl id="facility-details" class="result-grid" hidden>
+          <dt>Name</dt>
+          <dd id="facility-name"></dd>
+          <dt>District</dt>
+          <dd id="facility-district"></dd>
+          <dt>Open</dt>
+          <dd id="facility-open"></dd>
+          <dt>Doctor available</dt>
+          <dd id="facility-doctor"></dd>
+          <dt>Medicine available</dt>
+          <dd id="facility-medicine"></dd>
+          <dt>Last updated</dt>
+          <dd id="facility-updated"></dd>
+        </dl>
+      </div>
+
+      <div id="contact-doctor-block" class="contact-block" hidden>
+        <h3>Still want human follow-up?</h3>
+        <p class="hint">This sends a request for a care worker to contact you. It is not a medical guarantee.</p>
+        <label class="checkbox-row">
+          <input type="checkbox" id="contact-doctor-check" />
+          I still want to talk to a doctor
+        </label>
+        <button type="button" id="contact-doctor-btn" disabled>Request doctor contact</button>
+        <p id="contact-confirm" class="success" hidden></p>
+        <p id="contact-error" class="error" hidden></p>
+      </div>
+
+      <button type="button" id="new-request-btn" class="secondary">Start another request</button>
+    </section>
+  </main>
+
+  <footer>
+    <p>This tool provides non-diagnostic triage guidance only.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

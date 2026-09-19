@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -27,7 +28,7 @@ func TestHandlerSuccessSortedNewestFirst(t *testing.T) {
 	store = &mockLister{
 		sessions: []queueSession{
 			{SessionID: "s1", District: "Puri", SymptomsText: "fever", Urgency: "self_care", AdviceText: "Rest", CreatedAt: "2026-09-18T10:00:00Z"},
-			{SessionID: "s2", District: "Cuttack", SymptomsText: "cough", Urgency: "visit_soon", AdviceText: "Clinic", CreatedAt: "2026-09-19T12:00:00Z"},
+			{SessionID: "s2", District: "Cuttack", SymptomsText: "cough", Urgency: "visit_soon", AdviceText: "Clinic", CreatedAt: "2026-09-19T12:00:00Z", ContactDoctorRequested: true, Status: "acknowledged"},
 			{SessionID: "s3", District: "Khordha", SymptomsText: "pain", Urgency: "emergency", AdviceText: "ER", CreatedAt: "2026-09-19T08:00:00Z"},
 		},
 	}
@@ -55,6 +56,37 @@ func TestHandlerSuccessSortedNewestFirst(t *testing.T) {
 	if first.District != "Cuttack" || first.SymptomsText != "cough" || first.Urgency != "visit_soon" ||
 		first.AdviceText != "Clinic" || first.CreatedAt != "2026-09-19T12:00:00Z" {
 		t.Fatalf("unexpected fields: %+v", first)
+	}
+	if !first.ContactDoctorRequested {
+		t.Fatalf("expected contactDoctorRequested=true on first item")
+	}
+	if first.Status != "acknowledged" {
+		t.Fatalf("expected status=acknowledged, got %q", first.Status)
+	}
+	if got[2].ContactDoctorRequested {
+		t.Fatalf("older records without flag should default to false")
+	}
+}
+
+func TestHandlerContactDoctorRequestedInResponse(t *testing.T) {
+	store = &mockLister{
+		sessions: []queueSession{
+			{
+				SessionID: "s1", District: "Puri", SymptomsText: "rash", Urgency: "self_care",
+				AdviceText: "Monitor", CreatedAt: "2026-09-19T12:00:00Z", ContactDoctorRequested: true,
+			},
+		},
+	}
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	if !strings.Contains(resp.Body, `"contactDoctorRequested":true`) {
+		t.Fatalf("queue response missing contactDoctorRequested: %s", resp.Body)
 	}
 }
 

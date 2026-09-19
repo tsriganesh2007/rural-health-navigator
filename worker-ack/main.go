@@ -127,13 +127,19 @@ func jsonResponse(status int, body any) (events.APIGatewayProxyResponse, error) 
 		log.Printf("failed to marshal response: %v", err)
 		return events.APIGatewayProxyResponse{
 			StatusCode: 500,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       `{"error":"internal error"}`,
+			Headers: map[string]string{
+				"Content-Type":                "application/json",
+				"Access-Control-Allow-Origin": "*",
+			},
+			Body: `{"error":"internal error"}`,
 		}, nil
 	}
 	return events.APIGatewayProxyResponse{
 		StatusCode: status,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(b),
+		Headers: map[string]string{
+			"Content-Type":                "application/json",
+			"Access-Control-Allow-Origin": "*",
+		},
+		Body: string(b),
 	}, nil
 }

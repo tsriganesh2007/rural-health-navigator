@@ -41,11 +41,19 @@ var validUrgencies = map[string]bool{
 }
 
 type triageRequest struct {
-	SymptomsText string `json:"symptomsText"`
-	District     string `json:"district"`
+	SymptomsText           string `json:"symptomsText"`
+	District               string `json:"district"`
+	ContactDoctorRequested *bool  `json:"contactDoctorRequested,omitempty"`
 }
 
 type triageResponse struct {
+	SessionID              string `json:"sessionId"`
+	Urgency                string `json:"urgency"`
+	AdviceText             string `json:"adviceText"`
+	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
+}
+
+type modelTriageResult struct {
 	Urgency    string `json:"urgency"`
 	AdviceText string `json:"adviceText"`
 }
@@ -55,18 +63,20 @@ type errorBody struct {
 }
 
 type triageSession struct {
-	SessionID    string
-	District     string
-	SymptomsText string
-	Urgency      string
-	AdviceText   string
-	CreatedAt    string
+	SessionID              string
+	District               string
+	SymptomsText           string
+	Urgency                string
+	AdviceText             string
+	CreatedAt              string
+	ContactDoctorRequested bool
 }
 
 type triageNotification struct {
-	SessionID string `json:"sessionId"`
-	District  string `json:"district"`
-	Urgency   string `json:"urgency"`
+	SessionID              string `json:"sessionId"`
+	District               string `json:"district"`
+	Urgency                string `json:"urgency"`
+	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
 }
 
 // triageGenerator produces model JSON for a triage request (mocked in tests).
@@ -194,12 +204,13 @@ func (d *dynamoSessionStore) SaveSession(ctx context.Context, session triageSess
 	_, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(d.tableName),
 		Item: map[string]types.AttributeValue{
-			"sessionId":    &types.AttributeValueMemberS{Value: session.SessionID},
-			"district":     &types.AttributeValueMemberS{Value: session.District},
-			"symptomsText": &types.AttributeValueMemberS{Value: session.SymptomsText},
-			"urgency":      &types.AttributeValueMemberS{Value: session.Urgency},
-			"adviceText":   &types.AttributeValueMemberS{Value: session.AdviceText},
-			"createdAt":    &types.AttributeValueMemberS{Value: session.CreatedAt},
+			"sessionId":              &types.AttributeValueMemberS{Value: session.SessionID},
+			"district":               &types.AttributeValueMemberS{Value: session.District},
+			"symptomsText":           &types.AttributeValueMemberS{Value: session.SymptomsText},
+			"urgency":                &types.AttributeValueMemberS{Value: session.Urgency},
+			"adviceText":             &types.AttributeValueMemberS{Value: session.AdviceText},
+			"createdAt":              &types.AttributeValueMemberS{Value: session.CreatedAt},
+			"contactDoctorRequested": &types.AttributeValueMemberBOOL{Value: session.ContactDoctorRequested},
 		},
 	})
 	return err
@@ -250,13 +261,21 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		return jsonResponse(500, errorBody{Error: "invalid triage response from model"})
 	}
 
+	// Optional citizen flag for human follow-up; never overwrites AI urgency.
+	// Emergency cases always keep contactDoctorRequested=false.
+	contactRequested := false
+	if req.ContactDoctorRequested != nil && *req.ContactDoctorRequested && parsed.Urgency != "emergency" {
+		contactRequested = true
+	}
+
 	session := triageSession{
-		SessionID:    newSession(),
-		District:     req.District,
-		SymptomsText: req.SymptomsText,
-		Urgency:      parsed.Urgency,
-		AdviceText:   parsed.AdviceText,
-		CreatedAt:    nowUTC().Format(time.RFC3339),
+		SessionID:              newSession(),
+		District:               req.District,
+		SymptomsText:           req.SymptomsText,
+		Urgency:                parsed.Urgency,
+		AdviceText:             parsed.AdviceText,
+		CreatedAt:              nowUTC().Format(time.RFC3339),
+		ContactDoctorRequested: contactRequested,
 	}
 
 	if err := sessions.SaveSession(ctx, session); err != nil {
@@ -265,34 +284,40 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	}
 
 	note := triageNotification{
-		SessionID: session.SessionID,
-		District:  session.District,
-		Urgency:   session.Urgency,
+		SessionID:              session.SessionID,
+		District:               session.District,
+		Urgency:                session.Urgency,
+		ContactDoctorRequested: session.ContactDoctorRequested,
 	}
 	if err := notifier.PublishTriageNotification(ctx, note); err != nil {
 		log.Printf("triage notification publish failed: sessionId=%q err=%v", session.SessionID, err)
 		return jsonResponse(500, errorBody{Error: "failed to publish triage notification"})
 	}
 
-	return jsonResponse(200, parsed)
+	return jsonResponse(200, triageResponse{
+		SessionID:              session.SessionID,
+		Urgency:                parsed.Urgency,
+		AdviceText:             parsed.AdviceText,
+		ContactDoctorRequested: session.ContactDoctorRequested,
+	})
 }
 
-func parseTriageResponse(raw string) (triageResponse, error) {
+func parseTriageResponse(raw string) (modelTriageResult, error) {
 	cleaned := stripJSONFences(raw)
 
-	var resp triageResponse
+	var resp modelTriageResult
 	if err := json.Unmarshal([]byte(cleaned), &resp); err != nil {
-		return triageResponse{}, errInvalidModelOutput("JSON parse failed")
+		return modelTriageResult{}, errInvalidModelOutput("JSON parse failed")
 	}
 
 	resp.Urgency = strings.TrimSpace(resp.Urgency)
 	resp.AdviceText = strings.TrimSpace(resp.AdviceText)
 
 	if !validUrgencies[resp.Urgency] {
-		return triageResponse{}, errInvalidModelOutput("invalid urgency value")
+		return modelTriageResult{}, errInvalidModelOutput("invalid urgency value")
 	}
 	if resp.AdviceText == "" {
-		return triageResponse{}, errInvalidModelOutput("empty adviceText")
+		return modelTriageResult{}, errInvalidModelOutput("empty adviceText")
 	}
 
 	return resp, nil
@@ -320,14 +345,20 @@ func jsonResponse(status int, body any) (events.APIGatewayProxyResponse, error) 
 		log.Printf("failed to marshal response: %v", err)
 		return events.APIGatewayProxyResponse{
 			StatusCode: 500,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       `{"error":"internal error"}`,
+			Headers: map[string]string{
+				"Content-Type":                "application/json",
+				"Access-Control-Allow-Origin": "*",
+			},
+			Body: `{"error":"internal error"}`,
 		}, nil
 	}
 	return events.APIGatewayProxyResponse{
 		StatusCode: status,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(b),
+		Headers: map[string]string{
+			"Content-Type":                "application/json",
+			"Access-Control-Allow-Origin": "*",
+		},
+		Body: string(b),
 	}, nil
 }
 

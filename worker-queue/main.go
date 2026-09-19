@@ -19,12 +19,14 @@ import (
 const queueLimit = 20
 
 type queueSession struct {
-	SessionID    string `json:"sessionId"`
-	District     string `json:"district"`
-	SymptomsText string `json:"symptomsText"`
-	Urgency      string `json:"urgency"`
-	AdviceText   string `json:"adviceText"`
-	CreatedAt    string `json:"createdAt"`
+	SessionID              string `json:"sessionId"`
+	District               string `json:"district"`
+	SymptomsText           string `json:"symptomsText"`
+	Urgency                string `json:"urgency"`
+	AdviceText             string `json:"adviceText"`
+	CreatedAt              string `json:"createdAt"`
+	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
+	Status                 string `json:"status,omitempty"`
 }
 
 type errorBody struct {
@@ -77,12 +79,14 @@ func (d *dynamoSessionLister) ListSessions(ctx context.Context) ([]queueSession,
 
 		for _, item := range out.Items {
 			sessions = append(sessions, queueSession{
-				SessionID:    attrString(item, "sessionId"),
-				District:     attrString(item, "district"),
-				SymptomsText: attrString(item, "symptomsText"),
-				Urgency:      attrString(item, "urgency"),
-				AdviceText:   attrString(item, "adviceText"),
-				CreatedAt:    attrString(item, "createdAt"),
+				SessionID:              attrString(item, "sessionId"),
+				District:               attrString(item, "district"),
+				SymptomsText:           attrString(item, "symptomsText"),
+				Urgency:                attrString(item, "urgency"),
+				AdviceText:             attrString(item, "adviceText"),
+				CreatedAt:              attrString(item, "createdAt"),
+				ContactDoctorRequested: attrBool(item, "contactDoctorRequested"),
+				Status:                 attrString(item, "status"),
 			})
 		}
 
@@ -100,6 +104,14 @@ func attrString(item map[string]types.AttributeValue, key string) string {
 		return v.Value
 	}
 	return ""
+}
+
+func attrBool(item map[string]types.AttributeValue, key string) bool {
+	if v, ok := item[key].(*types.AttributeValueMemberBOOL); ok {
+		return v.Value
+	}
+	// Backward-compatible default when older records omit the field.
+	return false
 }
 
 func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -130,13 +142,19 @@ func jsonResponse(status int, body any) (events.APIGatewayProxyResponse, error) 
 		log.Printf("failed to marshal response: %v", err)
 		return events.APIGatewayProxyResponse{
 			StatusCode: 500,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       `{"error":"internal error"}`,
+			Headers: map[string]string{
+				"Content-Type":                "application/json",
+				"Access-Control-Allow-Origin": "*",
+			},
+			Body: `{"error":"internal error"}`,
 		}, nil
 	}
 	return events.APIGatewayProxyResponse{
 		StatusCode: status,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       string(b),
+		Headers: map[string]string{
+			"Content-Type":                "application/json",
+			"Access-Control-Allow-Origin": "*",
+		},
+		Body: string(b),
 	}, nil
 }
