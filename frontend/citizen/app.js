@@ -70,19 +70,16 @@ form.addEventListener("submit", async (event) => {
 
   const symptomsText = document.getElementById("symptoms").value.trim();
   const district = document.getElementById("district").value.trim();
-  const contactNumber = document.getElementById("contact-number").value.trim();
+  const contactDetails = document.getElementById("contact-details").value.trim();
 
-  if (!symptomsText || !district) {
-    showError(formError, "Please enter symptoms and select a district.");
+  if (!symptomsText || !district || !contactDetails) {
+    showError(formError, "Please enter symptoms, district, and contact details.");
     submitBtn.disabled = false;
     submitBtn.textContent = "Get guidance";
     return;
   }
 
-  const payload = { symptomsText, district };
-  if (contactNumber) {
-    payload.contactNumber = contactNumber;
-  }
+  const payload = { symptomsText, district, contactDetails };
 
   try {
     const res = await fetch(apiUrl("/triage"), {

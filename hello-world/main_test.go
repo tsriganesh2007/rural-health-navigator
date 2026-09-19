@@ -95,11 +95,12 @@ func TestHandlerValidation(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "invalid json", body: "{", wantStatus: 400},
-		{name: "missing symptoms", body: `{"symptomsText":"","district":"Warangal"}`, wantStatus: 400},
-		{name: "missing district", body: `{"symptomsText":"fever","district":""}`, wantStatus: 400},
-		{name: "bad phone", body: `{"symptomsText":"fever","district":"Warangal","contactNumber":"abc"}`, wantStatus: 400},
-		{name: "valid", body: `{"symptomsText":"mild fever","district":"Warangal"}`, wantStatus: 200},
-		{name: "valid with phone", body: `{"symptomsText":"mild fever","district":"Warangal","contactNumber":"+91 98765 43210"}`, wantStatus: 200},
+		{name: "missing symptoms", body: `{"symptomsText":"","district":"Warangal","contactDetails":"9876543210"}`, wantStatus: 400},
+		{name: "missing district", body: `{"symptomsText":"fever","district":"","contactDetails":"9876543210"}`, wantStatus: 400},
+		{name: "missing contact", body: `{"symptomsText":"fever","district":"Warangal"}`, wantStatus: 400},
+		{name: "short contact", body: `{"symptomsText":"fever","district":"Warangal","contactDetails":"ab"}`, wantStatus: 400},
+		{name: "valid", body: `{"symptomsText":"mild fever","district":"Warangal","contactDetails":"9876543210"}`, wantStatus: 200},
+		{name: "valid freeform contact", body: `{"symptomsText":"mild fever","district":"Warangal","contactDetails":"Ravi, WhatsApp 98765 43210, near bus stand"}`, wantStatus: 200},
 	}
 
 	for _, tt := range tests {
@@ -120,7 +121,7 @@ func TestHandlerAssignsFacilityAndPreservesDistrict(t *testing.T) {
 	store, pub, _ := setupHappyPathMocks()
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"cough","district":"Warangal","contactNumber":"9876543210"}`,
+		Body: `{"symptomsText":"cough","district":"Warangal","contactDetails":"9876543210"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -136,17 +137,17 @@ func TestHandlerAssignsFacilityAndPreservesDistrict(t *testing.T) {
 	if got.District != "Warangal" || !got.FacilityAvailable || got.FacilityID != "WARANGAL-001" {
 		t.Fatalf("unexpected facility assignment: %+v", got)
 	}
-	if strings.Contains(resp.Body, "9876543210") || strings.Contains(resp.Body, "contactNumber") {
-		t.Fatalf("citizen response must not echo contact number: %s", resp.Body)
+	if strings.Contains(resp.Body, "9876543210") || strings.Contains(resp.Body, "contactDetails") {
+		t.Fatalf("citizen response must not echo contact details: %s", resp.Body)
 	}
-	if store.last.ContactNumber != "9876543210" || store.last.FacilityID != "WARANGAL-001" || store.last.Status != pendingStatus {
+	if store.last.ContactDetails != "9876543210" || store.last.FacilityID != "WARANGAL-001" || store.last.Status != pendingStatus {
 		t.Fatalf("unexpected persisted session: %+v", store.last)
 	}
 	if store.last.District != "Warangal" {
 		t.Fatalf("district not preserved: %q", store.last.District)
 	}
-	if strings.Contains(pub.raw, "9876543210") || strings.Contains(pub.raw, "contactNumber") || strings.Contains(pub.raw, "symptomsText") {
-		t.Fatalf("SNS must omit phone and symptoms: %s", pub.raw)
+	if strings.Contains(pub.raw, "9876543210") || strings.Contains(pub.raw, "contactDetails") || strings.Contains(pub.raw, "symptomsText") {
+		t.Fatalf("SNS must omit contact details and symptoms: %s", pub.raw)
 	}
 }
 
@@ -155,7 +156,7 @@ func TestHandlerNoFacilityDoesNotFailTriage(t *testing.T) {
 	fac.found = false
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"headache","district":"Warangal"}`,
+		Body: `{"symptomsText":"headache","district":"Warangal","contactDetails":"neighbour phone 9988776655"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -184,7 +185,7 @@ func TestHandlerFacilityLookupErrorStillSaves(t *testing.T) {
 	fac.err = errors.New("scan failed")
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"rash","district":"Khammam"}`,
+		Body: `{"symptomsText":"rash","district":"Khammam","contactDetails":"ASHA worker, ward 3"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -197,19 +198,16 @@ func TestHandlerFacilityLookupErrorStillSaves(t *testing.T) {
 	}
 }
 
-func TestHandlerContactNumberOptional(t *testing.T) {
-	store, _, _ := setupHappyPathMocks()
+func TestHandlerContactDetailsRequired(t *testing.T) {
+	setupHappyPathMocks()
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
 		Body: `{"symptomsText":"mild fever","district":"Nalgonda"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
-	}
-	if store.last.ContactNumber != "" {
-		t.Fatalf("expected empty contactNumber, got %q", store.last.ContactNumber)
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d want=400 body=%s", resp.StatusCode, resp.Body)
 	}
 }
 
@@ -218,7 +216,7 @@ func TestHandlerLowUrgencyWithDoctorRequest(t *testing.T) {
 	aiClient = &mockGemini{text: `{"urgency":"self_care","adviceText":"Rest and hydrate."}`}
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"mild cold","district":"Warangal","contactDoctorRequested":true}`,
+		Body: `{"symptomsText":"mild cold","district":"Warangal","contactDetails":"9887766554","contactDoctorRequested":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -247,7 +245,7 @@ func TestHandlerEmergencyIgnoresDoctorRequest(t *testing.T) {
 	aiClient = &mockGemini{text: `{"urgency":"emergency","adviceText":"Seek emergency care immediately."}`}
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"severe chest pain","district":"Warangal","contactDoctorRequested":true}`,
+		Body: `{"symptomsText":"severe chest pain","district":"Warangal","contactDetails":"call clinic desk","contactDoctorRequested":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -272,7 +270,7 @@ func TestHandlerPersistFailureSkipsSNS(t *testing.T) {
 	store.err = errors.New("dynamo unavailable")
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"headache","district":"Warangal"}`,
+		Body: `{"symptomsText":"headache","district":"Warangal","contactDetails":"9988776655"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -287,7 +285,7 @@ func TestHandlerSNSFailureDoesNotClaimSuccess(t *testing.T) {
 	pub.err = errors.New("sns unavailable")
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"dizziness","district":"Warangal"}`,
+		Body: `{"symptomsText":"dizziness","district":"Warangal","contactDetails":"9988776655"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -304,7 +302,7 @@ func TestHandlerGeminiFailure(t *testing.T) {
 	pub := notifier.(*mockNotifier)
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"chest pain","district":"Warangal"}`,
+		Body: `{"symptomsText":"chest pain","district":"Warangal","contactDetails":"9988776655"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -325,11 +323,14 @@ func TestParseTriageResponseFencedJSON(t *testing.T) {
 	}
 }
 
-func TestValidateContactNumber(t *testing.T) {
-	if msg := validateContactNumber("9876543210"); msg != "" {
-		t.Fatalf("valid phone rejected: %s", msg)
+func TestValidateContactDetails(t *testing.T) {
+	if msg := validateContactDetails("9876543210"); msg != "" {
+		t.Fatalf("valid contact rejected: %s", msg)
 	}
-	if msg := validateContactNumber("12"); msg == "" {
-		t.Fatal("short phone should fail")
+	if msg := validateContactDetails("Ravi WhatsApp near PHC"); msg != "" {
+		t.Fatalf("freeform contact rejected: %s", msg)
+	}
+	if msg := validateContactDetails("ab"); msg == "" {
+		t.Fatal("short contact should fail")
 	}
 }

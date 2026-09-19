@@ -7,11 +7,10 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
-	"unicode"
+	"unicode/utf8"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -44,12 +43,10 @@ var validUrgencies = map[string]bool{
 	"emergency":  true,
 }
 
-var phoneDigitsPattern = regexp.MustCompile(`^\+?[0-9][0-9\s\-()]{5,18}[0-9]$`)
-
 type triageRequest struct {
 	SymptomsText           string `json:"symptomsText"`
 	District               string `json:"district"`
-	ContactNumber          string `json:"contactNumber,omitempty"`
+	ContactDetails         string `json:"contactDetails"`
 	ContactDoctorRequested *bool  `json:"contactDoctorRequested,omitempty"`
 }
 
@@ -88,7 +85,7 @@ type triageSession struct {
 	AdviceText             string
 	CreatedAt              string
 	ContactDoctorRequested bool
-	ContactNumber          string
+	ContactDetails         string
 	FacilityID             string
 	FacilityName           string
 	Status                 string
@@ -237,8 +234,8 @@ func (d *dynamoSessionStore) SaveSession(ctx context.Context, session triageSess
 		"contactDoctorRequested": &types.AttributeValueMemberBOOL{Value: session.ContactDoctorRequested},
 		"status":                 &types.AttributeValueMemberS{Value: session.Status},
 	}
-	if session.ContactNumber != "" {
-		item["contactNumber"] = &types.AttributeValueMemberS{Value: session.ContactNumber}
+	if session.ContactDetails != "" {
+		item["contactDetails"] = &types.AttributeValueMemberS{Value: session.ContactDetails}
 	}
 	if session.FacilityID != "" {
 		item["facilityId"] = &types.AttributeValueMemberS{Value: session.FacilityID}
@@ -339,22 +336,21 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 
 	req.SymptomsText = strings.TrimSpace(req.SymptomsText)
 	req.District = strings.TrimSpace(req.District)
-	req.ContactNumber = strings.TrimSpace(req.ContactNumber)
-	if req.SymptomsText == "" || req.District == "" {
-		log.Printf("validation failed: symptomsLen=%d districtSet=%t", len(req.SymptomsText), req.District != "")
-		return jsonResponse(400, errorBody{Error: "symptomsText and district are required"})
+	req.ContactDetails = strings.TrimSpace(req.ContactDetails)
+	if req.SymptomsText == "" || req.District == "" || req.ContactDetails == "" {
+		log.Printf("validation failed: symptomsLen=%d districtSet=%t contactSet=%t",
+			len(req.SymptomsText), req.District != "", req.ContactDetails != "")
+		return jsonResponse(400, errorBody{Error: "symptomsText, district, and contactDetails are required"})
 	}
 
-	if req.ContactNumber != "" {
-		if errMsg := validateContactNumber(req.ContactNumber); errMsg != "" {
-			log.Printf("validation failed: contactNumber invalid (len=%d)", len(req.ContactNumber))
-			return jsonResponse(400, errorBody{Error: errMsg})
-		}
+	if errMsg := validateContactDetails(req.ContactDetails); errMsg != "" {
+		log.Printf("validation failed: contactDetails invalid (len=%d)", len(req.ContactDetails))
+		return jsonResponse(400, errorBody{Error: errMsg})
 	}
 
-	// Do not log the contact number itself.
+	// Do not log the contact details themselves.
 	log.Printf("triage request received: district=%q symptomsLen=%d contactProvided=%t",
-		req.District, len(req.SymptomsText), req.ContactNumber != "")
+		req.District, len(req.SymptomsText), req.ContactDetails != "")
 
 	result, err := aiClient.GenerateTriageJSON(ctx, req)
 	if err != nil {
@@ -397,7 +393,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		AdviceText:             parsed.AdviceText,
 		CreatedAt:              nowUTC().Format(time.RFC3339),
 		ContactDoctorRequested: contactRequested,
-		ContactNumber:          req.ContactNumber,
+		ContactDetails:         req.ContactDetails,
 		FacilityID:             facilityID,
 		FacilityName:           facilityName,
 		Status:                 pendingStatus,
@@ -433,18 +429,13 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	})
 }
 
-func validateContactNumber(raw string) string {
-	if !phoneDigitsPattern.MatchString(raw) {
-		return "contactNumber format is invalid"
+func validateContactDetails(raw string) string {
+	length := utf8.RuneCountInString(raw)
+	if length < 3 {
+		return "contactDetails is too short"
 	}
-	digits := 0
-	for _, r := range raw {
-		if unicode.IsDigit(r) {
-			digits++
-		}
-	}
-	if digits < 7 || digits > 15 {
-		return "contactNumber must contain 7 to 15 digits"
+	if length > 200 {
+		return "contactDetails must be 200 characters or fewer"
 	}
 	return ""
 }

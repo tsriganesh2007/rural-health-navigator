@@ -227,9 +227,10 @@ function renderQueueItem(session) {
     ? ""
     : `<button type="button" class="ack-btn" data-session-id="${escapeHtml(session.sessionId)}">Acknowledge</button>`;
 
-  const contactRow = session.contactNumber
-    ? `<dt>Patient contact</dt><dd>${escapeHtml(session.contactNumber)}</dd>`
-    : `<dt>Patient contact</dt><dd>Not provided</dd>`;
+  const contactDetails = session.contactDetails || session.contactNumber || "";
+  const contactRow = contactDetails
+    ? `<dt>Contact details</dt><dd>${escapeHtml(contactDetails)}</dd>`
+    : `<dt>Contact details</dt><dd>Not provided</dd>`;
 
   const ackMeta = acked
     ? `<dt>Acknowledged by</dt><dd>${escapeHtml(session.acknowledgedBy || "—")}</dd>
@@ -246,7 +247,6 @@ function renderQueueItem(session) {
         <dt>Symptoms</dt><dd>${escapeHtml(session.symptomsText)}</dd>
         <dt>Advice</dt><dd>${escapeHtml(session.adviceText)}</dd>
         ${contactRow}
-        <dt>Contact request</dt><dd>${contact ? "Yes — citizen asked for human follow-up" : "No"}</dd>
         <dt>Created</dt><dd>${escapeHtml(session.createdAt)}</dd>
         <dt>Status</dt><dd>${escapeHtml(session.status || "pending")}</dd>
         ${ackMeta}

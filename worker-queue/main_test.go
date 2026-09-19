@@ -52,9 +52,9 @@ func TestHandlerFiltersToOwnFacilityAndOrdersPendingFirst(t *testing.T) {
 	store = &mockLister{
 		sessions: []queueSession{
 			{SessionID: "other", District: "Khammam", FacilityID: "KHAMMAM-001", Status: pendingStatus, CreatedAt: "2026-09-20T12:00:00Z"},
-			{SessionID: "ack-new", District: "Warangal", FacilityID: "WARANGAL-001", Status: acknowledgedStatus, CreatedAt: "2026-09-20T11:00:00Z", AcknowledgedBy: "worker-warangal-1", AcknowledgedAt: "2026-09-20T11:05:00Z", ContactNumber: "9999999999"},
+			{SessionID: "ack-new", District: "Warangal", FacilityID: "WARANGAL-001", Status: acknowledgedStatus, CreatedAt: "2026-09-20T11:00:00Z", AcknowledgedBy: "worker-warangal-1", AcknowledgedAt: "2026-09-20T11:05:00Z", ContactDetails: "9999999999"},
 			{SessionID: "pend-old", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-19T10:00:00Z"},
-			{SessionID: "pend-new", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-20T10:00:00Z", ContactDoctorRequested: true, ContactNumber: "9876543210"},
+			{SessionID: "pend-new", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-20T10:00:00Z", ContactDoctorRequested: true, ContactDetails: "9876543210"},
 			{SessionID: "ack-old", District: "Warangal", FacilityID: "WARANGAL-001", Status: acknowledgedStatus, CreatedAt: "2026-09-18T10:00:00Z"},
 		},
 	}
@@ -79,7 +79,7 @@ func TestHandlerFiltersToOwnFacilityAndOrdersPendingFirst(t *testing.T) {
 	if got[0].SessionID != "pend-new" || got[1].SessionID != "pend-old" || got[2].SessionID != "ack-new" || got[3].SessionID != "ack-old" {
 		t.Fatalf("unexpected order: %+v", got)
 	}
-	if got[0].ContactNumber != "9876543210" || !got[0].ContactDoctorRequested {
+	if got[0].ContactDetails != "9876543210" || !got[0].ContactDoctorRequested {
 		t.Fatalf("pending contact fields missing: %+v", got[0])
 	}
 	if got[2].AcknowledgedBy != "worker-warangal-1" || got[2].AcknowledgedAt == "" {
@@ -139,10 +139,10 @@ func TestHandlerDynamoFailure(t *testing.T) {
 	}
 }
 
-func TestHandlerContactNumberInResponse(t *testing.T) {
+func TestHandlerContactDetailsInResponse(t *testing.T) {
 	store = &mockLister{
 		sessions: []queueSession{
-			{SessionID: "s1", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-19T12:00:00Z", ContactNumber: "9123456789"},
+			{SessionID: "s1", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-19T12:00:00Z", ContactDetails: "Ravi WhatsApp 9123456789"},
 		},
 	}
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
@@ -151,7 +151,7 @@ func TestHandlerContactNumberInResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(resp.Body, `"contactNumber":"9123456789"`) {
-		t.Fatalf("missing contactNumber: %s", resp.Body)
+	if !strings.Contains(resp.Body, `"contactDetails":"Ravi WhatsApp 9123456789"`) {
+		t.Fatalf("missing contactDetails: %s", resp.Body)
 	}
 }

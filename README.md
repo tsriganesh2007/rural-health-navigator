@@ -46,7 +46,7 @@ go run . -table Facilities -region us-east-1
 
 ## Frontends
 
-- `frontend/citizen/` — symptoms, district, optional contact number, triage result, facility info, doctor-contact request
+- `frontend/citizen/` — symptoms, district, required contact details, triage result, facility info, doctor-contact request
 - `frontend/worker/` — demo login, facility status for own facility, district-filtered queue, acknowledge, hide-acknowledged toggle
 
 Set `API_BASE_URL` in each `app.js` to your API Gateway `…/Prod` base URL.
@@ -54,7 +54,7 @@ Set `API_BASE_URL` in each `app.js` to your API Gateway `…/Prod` base URL.
 ## Privacy notes (demo)
 
 - Do not commit real API keys
-- Contact numbers are stored on TriageSessions and shown only in the worker queue — not in SNS, not logged, not echoed in the citizen triage response
+- Contact details are stored on TriageSessions and shown only in the worker queue — not in SNS, not logged, not echoed in the citizen triage response
 - Symptom text is not sent in SNS payloads
 - Demo login is a fixed credential map — **not** Cognito / production auth
 

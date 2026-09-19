@@ -32,7 +32,7 @@ type queueSession struct {
 	AdviceText             string `json:"adviceText"`
 	CreatedAt              string `json:"createdAt"`
 	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
-	ContactNumber          string `json:"contactNumber,omitempty"`
+	ContactDetails         string `json:"contactDetails,omitempty"`
 	Status                 string `json:"status"`
 	AcknowledgedBy         string `json:"acknowledgedBy,omitempty"`
 	AcknowledgedAt         string `json:"acknowledgedAt,omitempty"`
@@ -100,7 +100,7 @@ func (d *dynamoSessionLister) ListSessions(ctx context.Context) ([]queueSession,
 				AdviceText:             attrString(item, "adviceText"),
 				CreatedAt:              attrString(item, "createdAt"),
 				ContactDoctorRequested: attrBool(item, "contactDoctorRequested"),
-				ContactNumber:          attrString(item, "contactNumber"),
+				ContactDetails:         firstNonEmpty(attrString(item, "contactDetails"), attrString(item, "contactNumber")),
 				Status:                 status,
 				AcknowledgedBy:         attrString(item, "acknowledgedBy"),
 				AcknowledgedAt:         attrString(item, "acknowledgedAt"),
@@ -128,6 +128,15 @@ func attrBool(item map[string]types.AttributeValue, key string) bool {
 		return v.Value
 	}
 	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
