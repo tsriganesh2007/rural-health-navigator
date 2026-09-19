@@ -1,6 +1,6 @@
 // Single configuration point for the deployed API Gateway base URL (…/Prod).
 // Replace with your stack output base, e.g. https://xxxx.execute-api.us-east-1.amazonaws.com/Prod
-const API_BASE_URL = "YOUR_DEPLOYED_API_URL";
+const API_BASE_URL = "https://cqf62u1pt5.execute-api.us-east-1.amazonaws.com/Prod";
 
 const form = document.getElementById("triage-form");
 const formError = document.getElementById("form-error");
