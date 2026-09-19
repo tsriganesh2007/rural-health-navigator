@@ -3,18 +3,19 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   rural-health-navigator
 
-  Rural Health Navigator SAM application — POST /triage MVP
+  Rural Health Navigator SAM application — triage + worker status MVP
 
-# Set GEMINI_API_KEY at deploy time (parameter override, console, or Secrets Manager).
-# Never commit a real API key.
+# Supply GeminiApiKey at deploy time via --parameter-overrides (not stored in this repo).
+# No default on purpose: a placeholder default would overwrite a working Lambda key on redeploy.
 Parameters:
   GeminiApiKey:
     Type: String
     NoEcho: true
-    Default: REPLACE_WITH_GEMINI_API_KEY
+    MinLength: 1
     Description: >
-      Gemini API key for triage. Override at deploy time.
-      Do not leave the placeholder in production.
+      Gemini API key for triage. Required at deploy time
+      (e.g. sam deploy --parameter-overrides GeminiApiKey=...).
+      Never commit a real key.
 
 Globals:
   Function:
@@ -24,6 +25,18 @@ Globals:
       LogFormat: JSON
 
 Resources:
+  FacilitiesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Facilities
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: facilityId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: facilityId
+          KeyType: HASH
+
   TriageFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -45,6 +58,33 @@ Resources:
             Path: /triage
             Method: POST
 
+  WorkerStatusFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: worker-status/
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          FACILITIES_TABLE_NAME: !Ref FacilitiesTable
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt FacilitiesTable.Arn
+      Events:
+        WorkerStatus:
+          Type: Api
+          Properties:
+            Path: /worker/status
+            Method: POST
+
   ApplicationResourceGroup:
     Type: AWS::ResourceGroups::Group
     Properties:
@@ -63,9 +103,18 @@ Outputs:
   TriageAPI:
     Description: API Gateway endpoint URL for Prod environment for POST /triage
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/triage/"
+  WorkerStatusAPI:
+    Description: API Gateway endpoint URL for Prod environment for POST /worker/status
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/worker/status/"
   TriageFunction:
     Description: Triage Lambda Function ARN
     Value: !GetAtt TriageFunction.Arn
+  WorkerStatusFunction:
+    Description: Worker status Lambda Function ARN
+    Value: !GetAtt WorkerStatusFunction.Arn
+  FacilitiesTableName:
+    Description: Facilities DynamoDB table name
+    Value: !Ref FacilitiesTable
   TriageFunctionIamRole:
     Description: Implicit IAM Role created for Triage function
     Value: !GetAtt TriageFunctionRole.Arn
