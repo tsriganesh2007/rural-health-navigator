@@ -134,14 +134,53 @@ button.ack-btn {
 .error { color: var(--danger); margin-top: 0.75rem; }
 .success { color: var(--ok); margin-top: 0.75rem; font-weight: 600; }
 
-.toolbar {
+.identity-panel {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.identity-panel p {
+  margin: 0.2rem 0;
+}
+
+.queue-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
   gap: 0.75rem;
   flex-wrap: wrap;
-  margin-bottom: 0.75rem;
 }
+
+.queue-header h2 {
+  margin-bottom: 0.25rem;
+}
+
+.counts {
+  margin: 0;
+  color: var(--muted);
+}
+
+.section-label {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.95rem;
+  color: var(--accent-dark);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
 
 .toolbar-actions {
   display: flex;

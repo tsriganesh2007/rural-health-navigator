@@ -16,24 +16,32 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-const queueLimit = 20
+const (
+	queueLimit         = 50
+	pendingStatus      = "pending"
+	acknowledgedStatus = "acknowledged"
+)
 
 type queueSession struct {
 	SessionID              string `json:"sessionId"`
 	District               string `json:"district"`
+	FacilityID             string `json:"facilityId,omitempty"`
+	FacilityName           string `json:"facilityName,omitempty"`
 	SymptomsText           string `json:"symptomsText"`
 	Urgency                string `json:"urgency"`
 	AdviceText             string `json:"adviceText"`
 	CreatedAt              string `json:"createdAt"`
 	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
-	Status                 string `json:"status,omitempty"`
+	ContactNumber          string `json:"contactNumber,omitempty"`
+	Status                 string `json:"status"`
+	AcknowledgedBy         string `json:"acknowledgedBy,omitempty"`
+	AcknowledgedAt         string `json:"acknowledgedAt,omitempty"`
 }
 
 type errorBody struct {
 	Error string `json:"error"`
 }
 
-// sessionLister reads triage sessions for the worker queue (mocked in tests).
 type sessionLister interface {
 	ListSessions(ctx context.Context) ([]queueSession, error)
 }
@@ -78,15 +86,24 @@ func (d *dynamoSessionLister) ListSessions(ctx context.Context) ([]queueSession,
 		}
 
 		for _, item := range out.Items {
+			status := attrString(item, "status")
+			if status == "" {
+				status = pendingStatus
+			}
 			sessions = append(sessions, queueSession{
 				SessionID:              attrString(item, "sessionId"),
 				District:               attrString(item, "district"),
+				FacilityID:             attrString(item, "facilityId"),
+				FacilityName:           attrString(item, "facilityName"),
 				SymptomsText:           attrString(item, "symptomsText"),
 				Urgency:                attrString(item, "urgency"),
 				AdviceText:             attrString(item, "adviceText"),
 				CreatedAt:              attrString(item, "createdAt"),
 				ContactDoctorRequested: attrBool(item, "contactDoctorRequested"),
-				Status:                 attrString(item, "status"),
+				ContactNumber:          attrString(item, "contactNumber"),
+				Status:                 status,
+				AcknowledgedBy:         attrString(item, "acknowledgedBy"),
+				AcknowledgedAt:         attrString(item, "acknowledgedAt"),
 			})
 		}
 
@@ -110,30 +127,81 @@ func attrBool(item map[string]types.AttributeValue, key string) bool {
 	if v, ok := item[key].(*types.AttributeValueMemberBOOL); ok {
 		return v.Value
 	}
-	// Backward-compatible default when older records omit the field.
 	return false
 }
 
 func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	workerID := strings.TrimSpace(request.QueryStringParameters["workerId"])
+	if workerID == "" {
+		return jsonResponse(400, errorBody{Error: "workerId query parameter is required"})
+	}
+
+	worker, ok := FindWorkerByID(workerID)
+	if !ok {
+		log.Printf("unknown workerId=%q", workerID)
+		return jsonResponse(404, errorBody{Error: "worker not found"})
+	}
+
 	sessions, err := store.ListSessions(ctx)
 	if err != nil {
 		log.Printf("worker queue scan failed: %v", err)
 		return jsonResponse(500, errorBody{Error: "failed to load worker queue"})
 	}
 
+	filtered := filterSessionsForWorker(sessions, worker)
+	ordered := orderQueueSessions(filtered)
+
+	if len(ordered) > queueLimit {
+		ordered = ordered[:queueLimit]
+	}
+	if ordered == nil {
+		ordered = []queueSession{}
+	}
+
+	log.Printf("worker queue returned: workerId=%q facilityId=%q count=%d", worker.WorkerID, worker.FacilityID, len(ordered))
+	return jsonResponse(200, ordered)
+}
+
+func filterSessionsForWorker(sessions []queueSession, worker DemoWorker) []queueSession {
+	out := make([]queueSession, 0)
+	for _, s := range sessions {
+		if sessionBelongsToWorker(s, worker) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func sessionBelongsToWorker(s queueSession, worker DemoWorker) bool {
+	if s.FacilityID != "" {
+		return s.FacilityID == worker.FacilityID
+	}
+	// Backward compatible: older sessions without facilityId match by district.
+	return strings.EqualFold(strings.TrimSpace(s.District), worker.District)
+}
+
+func orderQueueSessions(sessions []queueSession) []queueSession {
+	pending := make([]queueSession, 0)
+	acked := make([]queueSession, 0)
+	for _, s := range sessions {
+		if strings.EqualFold(s.Status, acknowledgedStatus) {
+			acked = append(acked, s)
+		} else {
+			if s.Status == "" {
+				s.Status = pendingStatus
+			}
+			pending = append(pending, s)
+		}
+	}
+	sortNewestFirst(pending)
+	sortNewestFirst(acked)
+	return append(pending, acked...)
+}
+
+func sortNewestFirst(sessions []queueSession) {
 	sort.SliceStable(sessions, func(i, j int) bool {
 		return sessions[i].CreatedAt > sessions[j].CreatedAt
 	})
-
-	if len(sessions) > queueLimit {
-		sessions = sessions[:queueLimit]
-	}
-	if sessions == nil {
-		sessions = []queueSession{}
-	}
-
-	log.Printf("worker queue returned: count=%d", len(sessions))
-	return jsonResponse(200, sessions)
 }
 
 func jsonResponse(status int, body any) (events.APIGatewayProxyResponse, error) {

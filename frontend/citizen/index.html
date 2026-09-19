@@ -25,12 +25,19 @@
         <label for="district">District</label>
         <select id="district" name="district" required>
           <option value="">Select district</option>
-          <option value="Puri">Puri</option>
-          <option value="Cuttack">Cuttack</option>
-          <option value="Khordha">Khordha</option>
-          <option value="Ganjam">Ganjam</option>
-          <option value="Balasore">Balasore</option>
+          <option value="Warangal">Warangal</option>
+          <option value="Hanamkonda">Hanamkonda</option>
+          <option value="Karimnagar">Karimnagar</option>
+          <option value="Khammam">Khammam</option>
+          <option value="Nalgonda">Nalgonda</option>
+          <option value="Nizamabad">Nizamabad</option>
+          <option value="Adilabad">Adilabad</option>
+          <option value="Mahabubnagar">Mahabubnagar</option>
         </select>
+
+        <label for="contact-number">Contact number for worker follow-up (optional)</label>
+        <input id="contact-number" name="contactNumber" type="tel"
+          placeholder="e.g. 9876543210" autocomplete="tel" />
 
         <button type="submit" id="submit-btn">Get guidance</button>
       </form>
@@ -51,16 +58,18 @@
         <dd id="urgency"></dd>
         <dt>Advice</dt>
         <dd id="advice"></dd>
+        <dt>District</dt>
+        <dd id="result-district"></dd>
       </dl>
 
       <div id="facility-block" class="facility-block">
-        <h3>Available facility nearby</h3>
-        <p id="facility-status" class="muted">Looking up open, doctor-staffed facilities…</p>
+        <h3>Assigned / available facility</h3>
+        <p id="facility-status" class="muted"></p>
         <dl id="facility-details" class="result-grid" hidden>
           <dt>Name</dt>
           <dd id="facility-name"></dd>
-          <dt>District</dt>
-          <dd id="facility-district"></dd>
+          <dt>Facility ID</dt>
+          <dd id="facility-id"></dd>
           <dt>Open</dt>
           <dd id="facility-open"></dd>
           <dt>Doctor available</dt>
@@ -74,7 +83,7 @@
 
       <div id="contact-doctor-block" class="contact-block" hidden>
         <h3>Still want human follow-up?</h3>
-        <p class="hint">This sends a request for a care worker to contact you. It is not a medical guarantee.</p>
+        <p class="hint">This sends a request for a care worker to contact you. It is not a medical guarantee and does not replace emergency care.</p>
         <label class="checkbox-row">
           <input type="checkbox" id="contact-doctor-check" />
           I still want to talk to a doctor

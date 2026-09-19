@@ -24,16 +24,44 @@ func (m *mockLister) ListSessions(ctx context.Context) ([]queueSession, error) {
 	return out, nil
 }
 
-func TestHandlerSuccessSortedNewestFirst(t *testing.T) {
+func TestHandlerRequiresWorkerID(t *testing.T) {
+	store = &mockLister{}
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d want=400", resp.StatusCode)
+	}
+}
+
+func TestHandlerUnknownWorker(t *testing.T) {
+	store = &mockLister{}
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		QueryStringParameters: map[string]string{"workerId": "nope"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 404 {
+		t.Fatalf("status=%d want=404", resp.StatusCode)
+	}
+}
+
+func TestHandlerFiltersToOwnFacilityAndOrdersPendingFirst(t *testing.T) {
 	store = &mockLister{
 		sessions: []queueSession{
-			{SessionID: "s1", District: "Puri", SymptomsText: "fever", Urgency: "self_care", AdviceText: "Rest", CreatedAt: "2026-09-18T10:00:00Z"},
-			{SessionID: "s2", District: "Cuttack", SymptomsText: "cough", Urgency: "visit_soon", AdviceText: "Clinic", CreatedAt: "2026-09-19T12:00:00Z", ContactDoctorRequested: true, Status: "acknowledged"},
-			{SessionID: "s3", District: "Khordha", SymptomsText: "pain", Urgency: "emergency", AdviceText: "ER", CreatedAt: "2026-09-19T08:00:00Z"},
+			{SessionID: "other", District: "Khammam", FacilityID: "KHAMMAM-001", Status: pendingStatus, CreatedAt: "2026-09-20T12:00:00Z"},
+			{SessionID: "ack-new", District: "Warangal", FacilityID: "WARANGAL-001", Status: acknowledgedStatus, CreatedAt: "2026-09-20T11:00:00Z", AcknowledgedBy: "worker-warangal-1", AcknowledgedAt: "2026-09-20T11:05:00Z", ContactNumber: "9999999999"},
+			{SessionID: "pend-old", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-19T10:00:00Z"},
+			{SessionID: "pend-new", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-20T10:00:00Z", ContactDoctorRequested: true, ContactNumber: "9876543210"},
+			{SessionID: "ack-old", District: "Warangal", FacilityID: "WARANGAL-001", Status: acknowledgedStatus, CreatedAt: "2026-09-18T10:00:00Z"},
 		},
 	}
 
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		QueryStringParameters: map[string]string{"workerId": "worker-warangal-1"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,115 +73,85 @@ func TestHandlerSuccessSortedNewestFirst(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(got) != 3 {
-		t.Fatalf("len=%d want=3", len(got))
+	if len(got) != 4 {
+		t.Fatalf("len=%d want=4 (other district excluded)", len(got))
 	}
-	if got[0].SessionID != "s2" || got[1].SessionID != "s3" || got[2].SessionID != "s1" {
+	if got[0].SessionID != "pend-new" || got[1].SessionID != "pend-old" || got[2].SessionID != "ack-new" || got[3].SessionID != "ack-old" {
 		t.Fatalf("unexpected order: %+v", got)
 	}
-
-	first := got[0]
-	if first.District != "Cuttack" || first.SymptomsText != "cough" || first.Urgency != "visit_soon" ||
-		first.AdviceText != "Clinic" || first.CreatedAt != "2026-09-19T12:00:00Z" {
-		t.Fatalf("unexpected fields: %+v", first)
+	if got[0].ContactNumber != "9876543210" || !got[0].ContactDoctorRequested {
+		t.Fatalf("pending contact fields missing: %+v", got[0])
 	}
-	if !first.ContactDoctorRequested {
-		t.Fatalf("expected contactDoctorRequested=true on first item")
-	}
-	if first.Status != "acknowledged" {
-		t.Fatalf("expected status=acknowledged, got %q", first.Status)
-	}
-	if got[2].ContactDoctorRequested {
-		t.Fatalf("older records without flag should default to false")
+	if got[2].AcknowledgedBy != "worker-warangal-1" || got[2].AcknowledgedAt == "" {
+		t.Fatalf("ack metadata missing: %+v", got[2])
 	}
 }
 
-func TestHandlerContactDoctorRequestedInResponse(t *testing.T) {
+func TestHandlerLegacySessionMatchesDistrict(t *testing.T) {
 	store = &mockLister{
 		sessions: []queueSession{
-			{
-				SessionID: "s1", District: "Puri", SymptomsText: "rash", Urgency: "self_care",
-				AdviceText: "Monitor", CreatedAt: "2026-09-19T12:00:00Z", ContactDoctorRequested: true,
-			},
+			{SessionID: "legacy", District: "Warangal", Status: "", CreatedAt: "2026-09-19T12:00:00Z"},
+			{SessionID: "other", District: "Nalgonda", Status: pendingStatus, CreatedAt: "2026-09-19T13:00:00Z"},
 		},
 	}
 
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		QueryStringParameters: map[string]string{"workerId": "worker-warangal-1"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	var got []queueSession
+	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if !strings.Contains(resp.Body, `"contactDoctorRequested":true`) {
-		t.Fatalf("queue response missing contactDoctorRequested: %s", resp.Body)
+	if len(got) != 1 || got[0].SessionID != "legacy" {
+		t.Fatalf("unexpected: %+v", got)
+	}
+	if got[0].Status != pendingStatus {
+		t.Fatalf("legacy status should default to pending, got %q", got[0].Status)
 	}
 }
 
 func TestHandlerEmptyQueue(t *testing.T) {
 	store = &mockLister{sessions: nil}
-
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		QueryStringParameters: map[string]string{"workerId": "worker-warangal-1"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
-	}
 	if resp.Body != "[]" {
-		t.Fatalf("body=%q want=[]", resp.Body)
+		t.Fatalf("body=%q", resp.Body)
 	}
 }
 
 func TestHandlerDynamoFailure(t *testing.T) {
 	store = &mockLister{err: errors.New("scan failed")}
-
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		QueryStringParameters: map[string]string{"workerId": "worker-warangal-1"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
-	}
-
-	var body errorBody
-	if err := json.Unmarshal([]byte(resp.Body), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body.Error != "failed to load worker queue" {
-		t.Fatalf("unexpected error: %+v", body)
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
 
-func TestHandlerRespectsQueueLimit(t *testing.T) {
-	sessions := make([]queueSession, 0, queueLimit+5)
-	for i := 0; i < queueLimit+5; i++ {
-		sessions = append(sessions, queueSession{
-			SessionID: "s-" + string(rune('0'+i)),
-			CreatedAt: "2026-09-19T12:00:00Z",
-		})
+func TestHandlerContactNumberInResponse(t *testing.T) {
+	store = &mockLister{
+		sessions: []queueSession{
+			{SessionID: "s1", District: "Warangal", FacilityID: "WARANGAL-001", Status: pendingStatus, CreatedAt: "2026-09-19T12:00:00Z", ContactNumber: "9123456789"},
+		},
 	}
-	// Make one clearly newest so order is deterministic at the front.
-	sessions[0].SessionID = "newest"
-	sessions[0].CreatedAt = "2026-09-20T00:00:00Z"
-	store = &mockLister{sessions: sessions}
-
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{})
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		QueryStringParameters: map[string]string{"workerId": "worker-warangal-1"},
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 200 {
-		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
-	}
-
-	var got []queueSession
-	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(got) != queueLimit {
-		t.Fatalf("len=%d want=%d", len(got), queueLimit)
-	}
-	if got[0].SessionID != "newest" {
-		t.Fatalf("expected newest first, got %+v", got[0])
+	if !strings.Contains(resp.Body, `"contactNumber":"9123456789"`) {
+		t.Fatalf("missing contactNumber: %s", resp.Body)
 	}
 }

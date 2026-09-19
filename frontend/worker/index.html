@@ -18,13 +18,19 @@
   <main>
     <section class="panel" id="login-section">
       <h1>Demo worker login</h1>
-      <p class="hint">Use the demo credentials below. This is only a simple gate for the hackathon demo — not secure authentication.</p>
+      <p class="hint">Demo-only gate. Each worker is tied to one district and facility. Not secure production authentication.</p>
 
       <div class="demo-creds">
-        <p><strong>DEMO credentials</strong></p>
+        <p><strong>DEMO credentials</strong> (password for all: <code>demo123</code>)</p>
         <ul>
-          <li>worker1 / demo123</li>
-          <li>worker2 / demo123</li>
+          <li>warangal.worker</li>
+          <li>hanamkonda.worker</li>
+          <li>karimnagar.worker</li>
+          <li>khammam.worker</li>
+          <li>nalgonda.worker</li>
+          <li>nizamabad.worker</li>
+          <li>adilabad.worker</li>
+          <li>mahabubnagar.worker</li>
         </ul>
       </div>
 
@@ -41,49 +47,57 @@
     </section>
 
     <section id="dashboard" hidden>
-      <div class="toolbar">
-        <p>Signed in as <strong id="worker-name"></strong></p>
+      <div class="toolbar panel identity-panel">
+        <div>
+          <p>Worker: <strong id="worker-name"></strong></p>
+          <p>District: <strong id="worker-district"></strong></p>
+          <p>Your facility: <strong id="worker-facility"></strong></p>
+        </div>
         <div class="toolbar-actions">
           <button type="button" id="refresh-btn" class="secondary">Refresh</button>
           <button type="button" id="logout-btn" class="secondary">Log out</button>
         </div>
       </div>
 
-      <section class="panel">
-        <h2>Triage queue</h2>
-        <p id="queue-status" class="muted">Loading queue…</p>
-        <div id="queue-list" class="queue-list"></div>
-      </section>
-
       <section class="panel facility-panel">
-        <h2>Update facility status</h2>
-        <p class="hint">Facility must already exist in DynamoDB. Status updates use POST /worker/status.</p>
+        <h2>Facility status</h2>
+        <p class="hint">Updates apply only to your assigned facility. You cannot choose another facility.</p>
         <form id="facility-form">
-          <label for="facility-id">Facility ID</label>
-          <input id="facility-id" name="facilityId" required placeholder="e.g. fac-puri-1" />
-
           <fieldset>
             <legend>Open</legend>
             <label class="inline"><input type="radio" name="statusOpen" value="true" checked /> Open</label>
             <label class="inline"><input type="radio" name="statusOpen" value="false" /> Closed</label>
           </fieldset>
-
           <fieldset>
             <legend>Doctor</legend>
             <label class="inline"><input type="radio" name="statusHasDoctor" value="true" checked /> Available</label>
             <label class="inline"><input type="radio" name="statusHasDoctor" value="false" /> Unavailable</label>
           </fieldset>
-
           <fieldset>
             <legend>Medicine</legend>
             <label class="inline"><input type="radio" name="statusHasMedicine" value="true" checked /> Available</label>
             <label class="inline"><input type="radio" name="statusHasMedicine" value="false" /> Unavailable</label>
           </fieldset>
-
-          <button type="submit">Update facility status</button>
+          <button type="submit">Save status</button>
         </form>
         <p id="facility-msg" class="success" hidden></p>
         <p id="facility-error" class="error" hidden></p>
+      </section>
+
+      <section class="panel">
+        <div class="queue-header">
+          <h2>Triage queue</h2>
+          <p class="counts">
+            Pending: <strong id="pending-count">0</strong>
+            · Acknowledged: <strong id="acked-count">0</strong>
+          </p>
+        </div>
+        <label class="checkbox-row">
+          <input type="checkbox" id="hide-acked" />
+          Hide acknowledged cases
+        </label>
+        <p id="queue-status" class="muted">Loading queue…</p>
+        <div id="queue-list" class="queue-list"></div>
       </section>
     </section>
   </main>

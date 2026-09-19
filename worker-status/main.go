@@ -18,16 +18,18 @@ import (
 )
 
 type workerStatusRequest struct {
-	FacilityID        string `json:"facilityId"`
+	WorkerID          string `json:"workerId"`
 	StatusOpen        *bool  `json:"statusOpen"`
 	StatusHasDoctor   *bool  `json:"statusHasDoctor"`
 	StatusHasMedicine *bool  `json:"statusHasMedicine"`
-	LastUpdatedBy     string `json:"lastUpdatedBy"`
 }
 
 type workerStatusResponse struct {
 	Message       string `json:"message"`
+	WorkerID      string `json:"workerId"`
 	FacilityID    string `json:"facilityId"`
+	FacilityName  string `json:"facilityName"`
+	District      string `json:"district"`
 	LastUpdatedAt string `json:"lastUpdatedAt"`
 }
 
@@ -35,21 +37,18 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
-// facilityStatusStore updates facility status fields in DynamoDB (mocked in tests).
 type facilityStatusStore interface {
 	UpdateStatus(ctx context.Context, facilityID string, statusOpen, statusHasDoctor, statusHasMedicine bool, lastUpdatedBy, lastUpdatedAt string) error
 }
 
 var (
-	store     facilityStatusStore
-	tableName string
-	nowUTC    = func() time.Time { return time.Now().UTC() }
+	store               facilityStatusStore
+	nowUTC              = func() time.Time { return time.Now().UTC() }
+	errFacilityNotFound = errors.New("facility not found")
 )
 
-var errFacilityNotFound = errors.New("facility not found")
-
 func main() {
-	tableName = strings.TrimSpace(os.Getenv("FACILITIES_TABLE_NAME"))
+	tableName := strings.TrimSpace(os.Getenv("FACILITIES_TABLE_NAME"))
 	if tableName == "" {
 		log.Fatal("FACILITIES_TABLE_NAME must be set")
 	}
@@ -107,21 +106,21 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		return jsonResponse(400, errorBody{Error: "invalid JSON body"})
 	}
 
-	req.FacilityID = strings.TrimSpace(req.FacilityID)
-	req.LastUpdatedBy = strings.TrimSpace(req.LastUpdatedBy)
+	req.WorkerID = strings.TrimSpace(req.WorkerID)
+	if req.WorkerID == "" || req.StatusOpen == nil || req.StatusHasDoctor == nil || req.StatusHasMedicine == nil {
+		return jsonResponse(400, errorBody{Error: "workerId, statusOpen, statusHasDoctor, and statusHasMedicine are required"})
+	}
 
-	if req.FacilityID == "" || req.LastUpdatedBy == "" ||
-		req.StatusOpen == nil || req.StatusHasDoctor == nil || req.StatusHasMedicine == nil {
-		log.Printf("validation failed: facilityIdSet=%t lastUpdatedBySet=%t statusFieldsPresent=%t",
-			req.FacilityID != "", req.LastUpdatedBy != "",
-			req.StatusOpen != nil && req.StatusHasDoctor != nil && req.StatusHasMedicine != nil)
-		return jsonResponse(400, errorBody{Error: "facilityId, statusOpen, statusHasDoctor, statusHasMedicine, and lastUpdatedBy are required"})
+	worker, ok := FindWorkerByID(req.WorkerID)
+	if !ok {
+		log.Printf("unknown workerId=%q", req.WorkerID)
+		return jsonResponse(404, errorBody{Error: "worker not found"})
 	}
 
 	lastUpdatedAt := nowUTC().Format(time.RFC3339)
-	log.Printf("worker status update: facilityId=%q lastUpdatedBy=%q", req.FacilityID, req.LastUpdatedBy)
+	log.Printf("worker status update: workerId=%q facilityId=%q", worker.WorkerID, worker.FacilityID)
 
-	err := store.UpdateStatus(ctx, req.FacilityID, *req.StatusOpen, *req.StatusHasDoctor, *req.StatusHasMedicine, req.LastUpdatedBy, lastUpdatedAt)
+	err := store.UpdateStatus(ctx, worker.FacilityID, *req.StatusOpen, *req.StatusHasDoctor, *req.StatusHasMedicine, worker.WorkerID, lastUpdatedAt)
 	if err != nil {
 		if errors.Is(err, errFacilityNotFound) {
 			return jsonResponse(404, errorBody{Error: "facility not found"})
@@ -132,7 +131,10 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 
 	return jsonResponse(200, workerStatusResponse{
 		Message:       "status updated",
-		FacilityID:    req.FacilityID,
+		WorkerID:      worker.WorkerID,
+		FacilityID:    worker.FacilityID,
+		FacilityName:  worker.FacilityName,
+		District:      worker.District,
 		LastUpdatedAt: lastUpdatedAt,
 	})
 }

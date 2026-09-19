@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -23,6 +26,7 @@ import (
 const (
 	defaultGeminiModelID = "gemini-3.5-flash-lite"
 	apiKeyPlaceholder    = "REPLACE_WITH_GEMINI_API_KEY"
+	pendingStatus        = "pending"
 )
 
 const systemPrompt = `You are a non-diagnostic triage assistant for rural health guidance.
@@ -40,9 +44,12 @@ var validUrgencies = map[string]bool{
 	"emergency":  true,
 }
 
+var phoneDigitsPattern = regexp.MustCompile(`^\+?[0-9][0-9\s\-()]{5,18}[0-9]$`)
+
 type triageRequest struct {
 	SymptomsText           string `json:"symptomsText"`
 	District               string `json:"district"`
+	ContactNumber          string `json:"contactNumber,omitempty"`
 	ContactDoctorRequested *bool  `json:"contactDoctorRequested,omitempty"`
 }
 
@@ -51,6 +58,11 @@ type triageResponse struct {
 	Urgency                string `json:"urgency"`
 	AdviceText             string `json:"adviceText"`
 	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
+	FacilityID             string `json:"facilityId,omitempty"`
+	FacilityName           string `json:"facilityName,omitempty"`
+	FacilityAvailable      bool   `json:"facilityAvailable"`
+	FacilityMessage        string `json:"facilityMessage"`
+	District               string `json:"district"`
 }
 
 type modelTriageResult struct {
@@ -62,6 +74,12 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
+type assignedFacility struct {
+	FacilityID string
+	Name       string
+	District   string
+}
+
 type triageSession struct {
 	SessionID              string
 	District               string
@@ -70,6 +88,10 @@ type triageSession struct {
 	AdviceText             string
 	CreatedAt              string
 	ContactDoctorRequested bool
+	ContactNumber          string
+	FacilityID             string
+	FacilityName           string
+	Status                 string
 }
 
 type triageNotification struct {
@@ -77,27 +99,30 @@ type triageNotification struct {
 	District               string `json:"district"`
 	Urgency                string `json:"urgency"`
 	ContactDoctorRequested bool   `json:"contactDoctorRequested"`
+	FacilityID             string `json:"facilityId,omitempty"`
 }
 
-// triageGenerator produces model JSON for a triage request (mocked in tests).
 type triageGenerator interface {
 	GenerateTriageJSON(ctx context.Context, req triageRequest) (string, error)
 }
 
-// sessionStore persists triage sessions (mocked in tests).
 type sessionStore interface {
 	SaveSession(ctx context.Context, session triageSession) error
 }
 
-// notificationPublisher publishes triage notifications (mocked in tests).
 type notificationPublisher interface {
 	PublishTriageNotification(ctx context.Context, note triageNotification) error
+}
+
+type facilityAssigner interface {
+	FindAvailableFacility(ctx context.Context, district string) (assignedFacility, bool, error)
 }
 
 var (
 	aiClient   triageGenerator
 	sessions   sessionStore
 	notifier   notificationPublisher
+	facilities facilityAssigner
 	nowUTC     = func() time.Time { return time.Now().UTC() }
 	newSession = newSessionID
 )
@@ -118,6 +143,11 @@ func main() {
 		log.Fatal("TRIAGE_SESSIONS_TABLE_NAME must be set")
 	}
 
+	facilitiesTable := strings.TrimSpace(os.Getenv("FACILITIES_TABLE_NAME"))
+	if facilitiesTable == "" {
+		log.Fatal("FACILITIES_TABLE_NAME must be set")
+	}
+
 	topicARN := strings.TrimSpace(os.Getenv("TRIAGE_NOTIFICATIONS_TOPIC_ARN"))
 	if topicARN == "" {
 		log.Fatal("TRIAGE_NOTIFICATIONS_TOPIC_ARN must be set")
@@ -136,17 +166,13 @@ func main() {
 		log.Fatalf("failed to load AWS config: %v", err)
 	}
 
+	ddb := dynamodb.NewFromConfig(cfg)
 	aiClient = &geminiGenerator{client: client, modelID: modelID}
-	sessions = &dynamoSessionStore{
-		client:    dynamodb.NewFromConfig(cfg),
-		tableName: tableName,
-	}
-	notifier = &snsNotifier{
-		client:   sns.NewFromConfig(cfg),
-		topicARN: topicARN,
-	}
+	sessions = &dynamoSessionStore{client: ddb, tableName: tableName}
+	facilities = &dynamoFacilityAssigner{client: ddb, tableName: facilitiesTable}
+	notifier = &snsNotifier{client: sns.NewFromConfig(cfg), topicARN: topicARN}
 
-	log.Printf("triage lambda starting: model=%q table=%q", modelID, tableName)
+	log.Printf("triage lambda starting: model=%q table=%q facilities=%q", modelID, tableName, facilitiesTable)
 	lambda.Start(handler)
 }
 
@@ -201,19 +227,90 @@ type dynamoSessionStore struct {
 }
 
 func (d *dynamoSessionStore) SaveSession(ctx context.Context, session triageSession) error {
+	item := map[string]types.AttributeValue{
+		"sessionId":              &types.AttributeValueMemberS{Value: session.SessionID},
+		"district":               &types.AttributeValueMemberS{Value: session.District},
+		"symptomsText":           &types.AttributeValueMemberS{Value: session.SymptomsText},
+		"urgency":                &types.AttributeValueMemberS{Value: session.Urgency},
+		"adviceText":             &types.AttributeValueMemberS{Value: session.AdviceText},
+		"createdAt":              &types.AttributeValueMemberS{Value: session.CreatedAt},
+		"contactDoctorRequested": &types.AttributeValueMemberBOOL{Value: session.ContactDoctorRequested},
+		"status":                 &types.AttributeValueMemberS{Value: session.Status},
+	}
+	if session.ContactNumber != "" {
+		item["contactNumber"] = &types.AttributeValueMemberS{Value: session.ContactNumber}
+	}
+	if session.FacilityID != "" {
+		item["facilityId"] = &types.AttributeValueMemberS{Value: session.FacilityID}
+	}
+	if session.FacilityName != "" {
+		item["facilityName"] = &types.AttributeValueMemberS{Value: session.FacilityName}
+	}
 	_, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(d.tableName),
-		Item: map[string]types.AttributeValue{
-			"sessionId":              &types.AttributeValueMemberS{Value: session.SessionID},
-			"district":               &types.AttributeValueMemberS{Value: session.District},
-			"symptomsText":           &types.AttributeValueMemberS{Value: session.SymptomsText},
-			"urgency":                &types.AttributeValueMemberS{Value: session.Urgency},
-			"adviceText":             &types.AttributeValueMemberS{Value: session.AdviceText},
-			"createdAt":              &types.AttributeValueMemberS{Value: session.CreatedAt},
-			"contactDoctorRequested": &types.AttributeValueMemberBOOL{Value: session.ContactDoctorRequested},
-		},
+		Item:      item,
 	})
 	return err
+}
+
+type dynamoFacilityAssigner struct {
+	client    *dynamodb.Client
+	tableName string
+}
+
+func (d *dynamoFacilityAssigner) FindAvailableFacility(ctx context.Context, district string) (assignedFacility, bool, error) {
+	var startKey map[string]types.AttributeValue
+	candidates := make([]assignedFacility, 0)
+
+	for {
+		out, err := d.client.Scan(ctx, &dynamodb.ScanInput{
+			TableName:         aws.String(d.tableName),
+			ExclusiveStartKey: startKey,
+		})
+		if err != nil {
+			return assignedFacility{}, false, err
+		}
+		for _, item := range out.Items {
+			itemDistrict := attrString(item, "district")
+			if !strings.EqualFold(strings.TrimSpace(itemDistrict), district) {
+				continue
+			}
+			if !attrBool(item, "statusOpen") || !attrBool(item, "statusHasDoctor") {
+				continue
+			}
+			candidates = append(candidates, assignedFacility{
+				FacilityID: attrString(item, "facilityId"),
+				Name:       attrString(item, "name"),
+				District:   itemDistrict,
+			})
+		}
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		startKey = out.LastEvaluatedKey
+	}
+
+	if len(candidates) == 0 {
+		return assignedFacility{}, false, nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].FacilityID < candidates[j].FacilityID
+	})
+	return candidates[0], true, nil
+}
+
+func attrString(item map[string]types.AttributeValue, key string) string {
+	if v, ok := item[key].(*types.AttributeValueMemberS); ok {
+		return v.Value
+	}
+	return ""
+}
+
+func attrBool(item map[string]types.AttributeValue, key string) bool {
+	if v, ok := item[key].(*types.AttributeValueMemberBOOL); ok {
+		return v.Value
+	}
+	return false
 }
 
 type snsNotifier struct {
@@ -242,12 +339,22 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 
 	req.SymptomsText = strings.TrimSpace(req.SymptomsText)
 	req.District = strings.TrimSpace(req.District)
+	req.ContactNumber = strings.TrimSpace(req.ContactNumber)
 	if req.SymptomsText == "" || req.District == "" {
 		log.Printf("validation failed: symptomsLen=%d districtSet=%t", len(req.SymptomsText), req.District != "")
 		return jsonResponse(400, errorBody{Error: "symptomsText and district are required"})
 	}
 
-	log.Printf("triage request received: district=%q symptomsLen=%d", req.District, len(req.SymptomsText))
+	if req.ContactNumber != "" {
+		if errMsg := validateContactNumber(req.ContactNumber); errMsg != "" {
+			log.Printf("validation failed: contactNumber invalid (len=%d)", len(req.ContactNumber))
+			return jsonResponse(400, errorBody{Error: errMsg})
+		}
+	}
+
+	// Do not log the contact number itself.
+	log.Printf("triage request received: district=%q symptomsLen=%d contactProvided=%t",
+		req.District, len(req.SymptomsText), req.ContactNumber != "")
 
 	result, err := aiClient.GenerateTriageJSON(ctx, req)
 	if err != nil {
@@ -261,11 +368,25 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		return jsonResponse(500, errorBody{Error: "invalid triage response from model"})
 	}
 
-	// Optional citizen flag for human follow-up; never overwrites AI urgency.
-	// Emergency cases always keep contactDoctorRequested=false.
 	contactRequested := false
 	if req.ContactDoctorRequested != nil && *req.ContactDoctorRequested && parsed.Urgency != "emergency" {
 		contactRequested = true
+	}
+
+	facilityMsg := "No currently available open facility with a doctor in this district."
+	facilityID := ""
+	facilityName := ""
+	facilityAvailable := false
+
+	assigned, found, ferr := facilities.FindAvailableFacility(ctx, req.District)
+	if ferr != nil {
+		log.Printf("facility lookup failed (continuing without assignment): district=%q err=%v", req.District, ferr)
+		facilityMsg = "Facility lookup temporarily unavailable; session saved without facility assignment."
+	} else if found {
+		facilityAvailable = true
+		facilityID = assigned.FacilityID
+		facilityName = assigned.Name
+		facilityMsg = "Assigned to an open, doctor-staffed facility in your district."
 	}
 
 	session := triageSession{
@@ -276,6 +397,10 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		AdviceText:             parsed.AdviceText,
 		CreatedAt:              nowUTC().Format(time.RFC3339),
 		ContactDoctorRequested: contactRequested,
+		ContactNumber:          req.ContactNumber,
+		FacilityID:             facilityID,
+		FacilityName:           facilityName,
+		Status:                 pendingStatus,
 	}
 
 	if err := sessions.SaveSession(ctx, session); err != nil {
@@ -288,6 +413,7 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		District:               session.District,
 		Urgency:                session.Urgency,
 		ContactDoctorRequested: session.ContactDoctorRequested,
+		FacilityID:             session.FacilityID,
 	}
 	if err := notifier.PublishTriageNotification(ctx, note); err != nil {
 		log.Printf("triage notification publish failed: sessionId=%q err=%v", session.SessionID, err)
@@ -299,7 +425,28 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 		Urgency:                parsed.Urgency,
 		AdviceText:             parsed.AdviceText,
 		ContactDoctorRequested: session.ContactDoctorRequested,
+		FacilityID:             facilityID,
+		FacilityName:           facilityName,
+		FacilityAvailable:      facilityAvailable,
+		FacilityMessage:        facilityMsg,
+		District:               req.District,
 	})
+}
+
+func validateContactNumber(raw string) string {
+	if !phoneDigitsPattern.MatchString(raw) {
+		return "contactNumber format is invalid"
+	}
+	digits := 0
+	for _, r := range raw {
+		if unicode.IsDigit(r) {
+			digits++
+		}
+	}
+	if digits < 7 || digits > 15 {
+		return "contactNumber must contain 7 to 15 digits"
+	}
+	return ""
 }
 
 func parseTriageResponse(raw string) (modelTriageResult, error) {

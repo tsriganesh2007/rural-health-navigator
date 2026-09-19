@@ -75,6 +75,7 @@ Resources:
           GEMINI_MODEL_ID: gemini-3.5-flash-lite
           GEMINI_API_KEY: !Ref GeminiApiKey
           TRIAGE_SESSIONS_TABLE_NAME: !Ref TriageSessionsTable
+          FACILITIES_TABLE_NAME: !Ref FacilitiesTable
           TRIAGE_NOTIFICATIONS_TOPIC_ARN: !Ref TriageNotificationTopic
       Policies:
         - Version: '2012-10-17'
@@ -85,6 +86,10 @@ Resources:
               Resource: !GetAtt TriageSessionsTable.Arn
             - Effect: Allow
               Action:
+                - dynamodb:Scan
+              Resource: !GetAtt FacilitiesTable.Arn
+            - Effect: Allow
+              Action:
                 - sns:Publish
               Resource: !Ref TriageNotificationTopic
       Events:
@@ -92,6 +97,23 @@ Resources:
           Type: Api
           Properties:
             Path: /triage
+            Method: POST
+
+  WorkerLoginFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: worker-login/
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+        - x86_64
+      Events:
+        WorkerLogin:
+          Type: Api
+          Properties:
+            Path: /worker/login
             Method: POST
 
   TriageContactFunction:
@@ -226,6 +248,7 @@ Resources:
           Statement:
             - Effect: Allow
               Action:
+                - dynamodb:GetItem
                 - dynamodb:UpdateItem
               Resource: !GetAtt TriageSessionsTable.Arn
       Events:
@@ -259,6 +282,9 @@ Outputs:
   FacilityLookupAPI:
     Description: API Gateway endpoint URL for Prod environment for GET /facilities/available
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/facilities/available/"
+  WorkerLoginAPI:
+    Description: API Gateway endpoint URL for Prod environment for POST /worker/login (demo-only)
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/worker/login/"
   WorkerStatusAPI:
     Description: API Gateway endpoint URL for Prod environment for POST /worker/status
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/worker/status/"
@@ -277,6 +303,9 @@ Outputs:
   FacilityLookupFunction:
     Description: Facility lookup Lambda Function ARN
     Value: !GetAtt FacilityLookupFunction.Arn
+  WorkerLoginFunction:
+    Description: Worker login Lambda Function ARN (demo-only)
+    Value: !GetAtt WorkerLoginFunction.Arn
   WorkerStatusFunction:
     Description: Worker status Lambda Function ARN
     Value: !GetAtt WorkerStatusFunction.Arn

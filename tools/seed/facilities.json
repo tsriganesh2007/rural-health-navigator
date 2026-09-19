@@ -1,0 +1,112 @@
+[
+  {
+    "facilityId": "WARANGAL-001",
+    "name": "Warangal Demo Community Health Centre",
+    "district": "Warangal",
+    "lat": 17.9689,
+    "long": 79.5941,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "HANAMKONDA-001",
+    "name": "Hanamkonda Demo Primary Health Centre",
+    "district": "Hanamkonda",
+    "lat": 18.0079,
+    "long": 79.5587,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "KARIMNAGAR-001",
+    "name": "Karimnagar Demo Rural Clinic",
+    "district": "Karimnagar",
+    "lat": 18.4386,
+    "long": 79.1288,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "KHAMMAM-001",
+    "name": "Khammam Demo Community Health Centre",
+    "district": "Khammam",
+    "lat": 17.2473,
+    "long": 80.1514,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "NALGONDA-001",
+    "name": "Nalgonda Demo Primary Health Centre",
+    "district": "Nalgonda",
+    "lat": 17.0575,
+    "long": 79.2684,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "NIZAMABAD-001",
+    "name": "Nizamabad Demo Rural Clinic",
+    "district": "Nizamabad",
+    "lat": 18.6725,
+    "long": 78.0941,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "ADILABAD-001",
+    "name": "Adilabad Demo Community Health Centre",
+    "district": "Adilabad",
+    "lat": 19.6641,
+    "long": 78.532,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "MAHABUBNAGAR-001",
+    "name": "Mahabubnagar Demo Primary Health Centre",
+    "district": "Mahabubnagar",
+    "lat": 16.7488,
+    "long": 78.0039,
+    "statusOpen": true,
+    "statusHasDoctor": true,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "WARANGAL-002",
+    "name": "Warangal Demo Night Dispensary (closed seed)",
+    "district": "Warangal",
+    "lat": 17.95,
+    "long": 79.58,
+    "statusOpen": false,
+    "statusHasDoctor": false,
+    "statusHasMedicine": true,
+    "lastUpdatedBy": "seed"
+  },
+  {
+    "facilityId": "KHAMMAM-002",
+    "name": "Khammam Demo Outreach Post (no doctor seed)",
+    "district": "Khammam",
+    "lat": 17.26,
+    "long": 80.14,
+    "statusOpen": true,
+    "statusHasDoctor": false,
+    "statusHasMedicine": false,
+    "lastUpdatedBy": "seed"
+  }
+]

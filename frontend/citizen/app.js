@@ -1,5 +1,4 @@
 // Single configuration point for the deployed API Gateway base URL (…/Prod).
-// Replace with your stack output base, e.g. https://xxxx.execute-api.us-east-1.amazonaws.com/Prod
 const API_BASE_URL = "https://cqf62u1pt5.execute-api.us-east-1.amazonaws.com/Prod";
 
 const form = document.getElementById("triage-form");
@@ -11,6 +10,7 @@ const submitBtn = document.getElementById("submit-btn");
 const sessionIdEl = document.getElementById("session-id");
 const urgencyEl = document.getElementById("urgency");
 const adviceEl = document.getElementById("advice");
+const resultDistrictEl = document.getElementById("result-district");
 const emergencyBanner = document.getElementById("emergency-banner");
 
 const facilityStatus = document.getElementById("facility-status");
@@ -23,6 +23,7 @@ const contactConfirm = document.getElementById("contact-confirm");
 const contactError = document.getElementById("contact-error");
 
 let currentSessionId = null;
+let currentDistrict = null;
 
 function apiUrl(path) {
   const base = API_BASE_URL.replace(/\/$/, "");
@@ -54,13 +55,11 @@ function urgencyLabel(urgency) {
 }
 
 async function parseJsonResponse(res) {
-  let data = null;
   try {
-    data = await res.json();
+    return await res.json();
   } catch (_) {
-    data = null;
+    return null;
   }
-  return data;
 }
 
 form.addEventListener("submit", async (event) => {
@@ -71,6 +70,7 @@ form.addEventListener("submit", async (event) => {
 
   const symptomsText = document.getElementById("symptoms").value.trim();
   const district = document.getElementById("district").value.trim();
+  const contactNumber = document.getElementById("contact-number").value.trim();
 
   if (!symptomsText || !district) {
     showError(formError, "Please enter symptoms and select a district.");
@@ -79,11 +79,16 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  const payload = { symptomsText, district };
+  if (contactNumber) {
+    payload.contactNumber = contactNumber;
+  }
+
   try {
     const res = await fetch(apiUrl("/triage"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symptomsText, district }),
+      body: JSON.stringify(payload),
     });
     const data = await parseJsonResponse(res);
     if (!res.ok) {
@@ -91,8 +96,16 @@ form.addEventListener("submit", async (event) => {
     }
 
     currentSessionId = data.sessionId;
+    currentDistrict = data.district || district;
     showResult(data);
-    lookupFacility(district);
+    if (data.facilityAvailable && data.facilityId) {
+      enrichFacilityStatus(data);
+    } else {
+      facilityDetails.hidden = true;
+      facilityStatus.textContent =
+        data.facilityMessage ||
+        "No currently available open facility with a doctor in this district.";
+    }
   } catch (err) {
     showError(formError, err.message || "Unable to reach triage service.");
   } finally {
@@ -109,6 +122,7 @@ function showResult(data) {
   urgencyEl.textContent = urgencyLabel(data.urgency);
   urgencyEl.className = data.urgency === "emergency" ? "emergency" : "";
   adviceEl.textContent = data.adviceText || "";
+  resultDistrictEl.textContent = data.district || currentDistrict || "—";
 
   const isEmergency = data.urgency === "emergency";
   emergencyBanner.hidden = !isEmergency;
@@ -116,6 +130,7 @@ function showResult(data) {
   contactConfirm.hidden = true;
   contactError.hidden = true;
   contactCheck.checked = false;
+  contactCheck.disabled = false;
   contactBtn.disabled = true;
 
   if (!isEmergency && (data.urgency === "self_care" || data.urgency === "visit_soon")) {
@@ -125,36 +140,34 @@ function showResult(data) {
   }
 }
 
-async function lookupFacility(district) {
-  facilityDetails.hidden = true;
-  facilityStatus.hidden = false;
-  facilityStatus.textContent = "Looking up open, doctor-staffed facilities…";
+async function enrichFacilityStatus(triageData) {
+  facilityStatus.textContent = triageData.facilityMessage || "Facility assigned for your district.";
+  facilityDetails.hidden = false;
+  document.getElementById("facility-name").textContent = triageData.facilityName || triageData.facilityId;
+  document.getElementById("facility-id").textContent = triageData.facilityId || "—";
+  document.getElementById("facility-open").textContent = "…";
+  document.getElementById("facility-doctor").textContent = "…";
+  document.getElementById("facility-medicine").textContent = "…";
+  document.getElementById("facility-updated").textContent = "…";
 
   try {
+    const district = triageData.district || currentDistrict;
     const res = await fetch(
       apiUrl(`/facilities/available?district=${encodeURIComponent(district)}`),
       { method: "GET" }
     );
     const data = await parseJsonResponse(res);
-    if (res.status === 404) {
-      facilityStatus.textContent =
-        "No currently open facility with a doctor reported available in this district.";
+    if (!res.ok) {
       return;
     }
-    if (!res.ok) {
-      throw new Error((data && data.error) || `Facility lookup failed (${res.status})`);
-    }
-
-    facilityStatus.hidden = true;
-    facilityDetails.hidden = false;
-    document.getElementById("facility-name").textContent = data.name || data.facilityId;
-    document.getElementById("facility-district").textContent = data.district || "—";
+    document.getElementById("facility-name").textContent = data.name || triageData.facilityName || data.facilityId;
+    document.getElementById("facility-id").textContent = data.facilityId || triageData.facilityId;
     document.getElementById("facility-open").textContent = data.statusOpen ? "Yes" : "No";
     document.getElementById("facility-doctor").textContent = data.statusHasDoctor ? "Yes" : "No";
     document.getElementById("facility-medicine").textContent = data.statusHasMedicine ? "Yes" : "No";
     document.getElementById("facility-updated").textContent = data.lastUpdatedAt || "—";
-  } catch (err) {
-    facilityStatus.textContent = err.message || "Could not load facility information.";
+  } catch (_) {
+    // Assignment info from triage is enough for the demo.
   }
 }
 
@@ -196,6 +209,7 @@ contactBtn.addEventListener("click", async () => {
 
 document.getElementById("new-request-btn").addEventListener("click", () => {
   currentSessionId = null;
+  currentDistrict = null;
   resultSection.hidden = true;
   formSection.hidden = false;
   form.reset();

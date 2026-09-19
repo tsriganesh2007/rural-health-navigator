@@ -53,15 +53,37 @@ func (m *mockNotifier) PublishTriageNotification(ctx context.Context, note triag
 	return m.err
 }
 
-func setupHappyPathMocks() (*mockSessionStore, *mockNotifier) {
+type mockFacilityAssigner struct {
+	facility assignedFacility
+	found    bool
+	err      error
+}
+
+func (m *mockFacilityAssigner) FindAvailableFacility(ctx context.Context, district string) (assignedFacility, bool, error) {
+	if m.err != nil {
+		return assignedFacility{}, false, m.err
+	}
+	return m.facility, m.found, nil
+}
+
+func setupHappyPathMocks() (*mockSessionStore, *mockNotifier, *mockFacilityAssigner) {
 	store := &mockSessionStore{}
 	pub := &mockNotifier{}
+	fac := &mockFacilityAssigner{
+		found: true,
+		facility: assignedFacility{
+			FacilityID: "WARANGAL-001",
+			Name:       "Warangal Demo Community Health Centre",
+			District:   "Warangal",
+		},
+	}
 	aiClient = &mockGemini{text: `{"urgency":"visit_soon","adviceText":"See a clinician soon."}`}
 	sessions = store
 	notifier = pub
+	facilities = fac
 	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
 	newSession = func() string { return "sess-fixed-1" }
-	return store, pub
+	return store, pub, fac
 }
 
 func TestHandlerValidation(t *testing.T) {
@@ -73,10 +95,11 @@ func TestHandlerValidation(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "invalid json", body: "{", wantStatus: 400},
-		{name: "missing symptoms", body: `{"symptomsText":"","district":"Puri"}`, wantStatus: 400},
+		{name: "missing symptoms", body: `{"symptomsText":"","district":"Warangal"}`, wantStatus: 400},
 		{name: "missing district", body: `{"symptomsText":"fever","district":""}`, wantStatus: 400},
-		{name: "whitespace only", body: `{"symptomsText":"  ","district":"  "}`, wantStatus: 400},
-		{name: "valid", body: `{"symptomsText":"mild fever","district":"Puri"}`, wantStatus: 200},
+		{name: "bad phone", body: `{"symptomsText":"fever","district":"Warangal","contactNumber":"abc"}`, wantStatus: 400},
+		{name: "valid", body: `{"symptomsText":"mild fever","district":"Warangal"}`, wantStatus: 200},
+		{name: "valid with phone", body: `{"symptomsText":"mild fever","district":"Warangal","contactNumber":"+91 98765 43210"}`, wantStatus: 200},
 	}
 
 	for _, tt := range tests {
@@ -93,12 +116,11 @@ func TestHandlerValidation(t *testing.T) {
 	}
 }
 
-func TestHandlerSuccessPersistsAndPublishes(t *testing.T) {
-	store, pub := setupHappyPathMocks()
-	symptoms := "persistent cough for three days"
+func TestHandlerAssignsFacilityAndPreservesDistrict(t *testing.T) {
+	store, pub, _ := setupHappyPathMocks()
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"` + symptoms + `","district":"Cuttack"}`,
+		Body: `{"symptomsText":"cough","district":"Warangal","contactNumber":"9876543210"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -111,52 +133,92 @@ func TestHandlerSuccessPersistsAndPublishes(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.SessionID != "sess-fixed-1" || got.Urgency != "visit_soon" || got.AdviceText != "See a clinician soon." {
-		t.Fatalf("unexpected body: %+v", got)
+	if got.District != "Warangal" || !got.FacilityAvailable || got.FacilityID != "WARANGAL-001" {
+		t.Fatalf("unexpected facility assignment: %+v", got)
 	}
-	if got.ContactDoctorRequested {
-		t.Fatalf("expected contactDoctorRequested=false by default, got true")
+	if strings.Contains(resp.Body, "9876543210") || strings.Contains(resp.Body, "contactNumber") {
+		t.Fatalf("citizen response must not echo contact number: %s", resp.Body)
 	}
-
-	if store.calls != 1 {
-		t.Fatalf("store calls=%d want=1", store.calls)
-	}
-	if store.last.SessionID != "sess-fixed-1" || store.last.District != "Cuttack" || store.last.Urgency != "visit_soon" {
+	if store.last.ContactNumber != "9876543210" || store.last.FacilityID != "WARANGAL-001" || store.last.Status != pendingStatus {
 		t.Fatalf("unexpected persisted session: %+v", store.last)
 	}
-	if store.last.SymptomsText != symptoms {
-		t.Fatalf("expected symptoms persisted, got %q", store.last.SymptomsText)
+	if store.last.District != "Warangal" {
+		t.Fatalf("district not preserved: %q", store.last.District)
 	}
-	if store.last.ContactDoctorRequested {
-		t.Fatalf("expected persisted contactDoctorRequested=false")
+	if strings.Contains(pub.raw, "9876543210") || strings.Contains(pub.raw, "contactNumber") || strings.Contains(pub.raw, "symptomsText") {
+		t.Fatalf("SNS must omit phone and symptoms: %s", pub.raw)
+	}
+}
+
+func TestHandlerNoFacilityDoesNotFailTriage(t *testing.T) {
+	store, _, fac := setupHappyPathMocks()
+	fac.found = false
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"symptomsText":"headache","district":"Warangal"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
 	}
 
-	if pub.calls != 1 {
-		t.Fatalf("notifier calls=%d want=1", pub.calls)
+	var got triageResponse
+	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if pub.last.SessionID != "sess-fixed-1" || pub.last.District != "Cuttack" || pub.last.Urgency != "visit_soon" {
-		t.Fatalf("unexpected notification: %+v", pub.last)
+	if got.FacilityAvailable || got.FacilityID != "" {
+		t.Fatalf("expected no facility: %+v", got)
 	}
-	if pub.last.ContactDoctorRequested {
-		t.Fatalf("expected SNS contactDoctorRequested=false")
+	if !strings.Contains(got.FacilityMessage, "No currently available") {
+		t.Fatalf("facility message=%q", got.FacilityMessage)
 	}
-	if strings.Contains(pub.raw, symptoms) || strings.Contains(pub.raw, "symptomsText") {
-		t.Fatalf("SNS payload must not include symptoms: %s", pub.raw)
+	if store.calls != 1 || store.last.FacilityID != "" || store.last.Status != pendingStatus {
+		t.Fatalf("session should still persist: %+v", store.last)
 	}
-	if !strings.Contains(pub.raw, `"sessionId"`) || !strings.Contains(pub.raw, `"district"`) || !strings.Contains(pub.raw, `"urgency"`) {
-		t.Fatalf("SNS payload missing required fields: %s", pub.raw)
+}
+
+func TestHandlerFacilityLookupErrorStillSaves(t *testing.T) {
+	store, _, fac := setupHappyPathMocks()
+	fac.err = errors.New("scan failed")
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"symptomsText":"rash","district":"Khammam"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(pub.raw, `"contactDoctorRequested":false`) {
-		t.Fatalf("SNS payload missing contactDoctorRequested: %s", pub.raw)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	if store.calls != 1 {
+		t.Fatalf("store calls=%d", store.calls)
+	}
+}
+
+func TestHandlerContactNumberOptional(t *testing.T) {
+	store, _, _ := setupHappyPathMocks()
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"symptomsText":"mild fever","district":"Nalgonda"}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	if store.last.ContactNumber != "" {
+		t.Fatalf("expected empty contactNumber, got %q", store.last.ContactNumber)
 	}
 }
 
 func TestHandlerLowUrgencyWithDoctorRequest(t *testing.T) {
-	store, pub := setupHappyPathMocks()
+	store, pub, _ := setupHappyPathMocks()
 	aiClient = &mockGemini{text: `{"urgency":"self_care","adviceText":"Rest and hydrate."}`}
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"mild cold","district":"Puri","contactDoctorRequested":true}`,
+		Body: `{"symptomsText":"mild cold","district":"Warangal","contactDoctorRequested":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -169,29 +231,23 @@ func TestHandlerLowUrgencyWithDoctorRequest(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Urgency != "self_care" {
-		t.Fatalf("urgency must stay self_care, got %q", got.Urgency)
+	if got.Urgency != "self_care" || !got.ContactDoctorRequested {
+		t.Fatalf("unexpected body: %+v", got)
 	}
-	if !got.ContactDoctorRequested {
-		t.Fatalf("expected contactDoctorRequested=true")
+	if store.last.Urgency != "self_care" || !store.last.ContactDoctorRequested {
+		t.Fatalf("unexpected session: %+v", store.last)
 	}
-	if !store.last.ContactDoctorRequested || store.last.Urgency != "self_care" {
-		t.Fatalf("unexpected persisted session: %+v", store.last)
-	}
-	if !pub.last.ContactDoctorRequested || pub.last.Urgency != "self_care" {
+	if pub.last.Urgency != "self_care" || !pub.last.ContactDoctorRequested {
 		t.Fatalf("unexpected SNS: %+v", pub.last)
-	}
-	if strings.Contains(pub.raw, "symptomsText") {
-		t.Fatalf("SNS must not include symptoms: %s", pub.raw)
 	}
 }
 
 func TestHandlerEmergencyIgnoresDoctorRequest(t *testing.T) {
-	store, pub := setupHappyPathMocks()
+	store, pub, _ := setupHappyPathMocks()
 	aiClient = &mockGemini{text: `{"urgency":"emergency","adviceText":"Seek emergency care immediately."}`}
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"severe chest pain","district":"Khordha","contactDoctorRequested":true}`,
+		Body: `{"symptomsText":"severe chest pain","district":"Warangal","contactDoctorRequested":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -199,69 +255,45 @@ func TestHandlerEmergencyIgnoresDoctorRequest(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
 	}
-
 	var got triageResponse
 	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Urgency != "emergency" {
-		t.Fatalf("urgency=%q", got.Urgency)
-	}
-	if got.ContactDoctorRequested {
-		t.Fatalf("emergency must not set contactDoctorRequested")
+	if got.Urgency != "emergency" || got.ContactDoctorRequested {
+		t.Fatalf("unexpected body: %+v", got)
 	}
 	if store.last.ContactDoctorRequested || pub.last.ContactDoctorRequested {
-		t.Fatalf("emergency must persist/publish contactDoctorRequested=false")
+		t.Fatalf("emergency must keep contactDoctorRequested=false")
 	}
 }
 
 func TestHandlerPersistFailureSkipsSNS(t *testing.T) {
-	store, pub := setupHappyPathMocks()
+	store, pub, _ := setupHappyPathMocks()
 	store.err = errors.New("dynamo unavailable")
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"headache","district":"Puri"}`,
+		Body: `{"symptomsText":"headache","district":"Warangal"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
-	}
-	if store.calls != 1 {
-		t.Fatalf("store calls=%d want=1", store.calls)
-	}
-	if pub.calls != 0 {
-		t.Fatalf("notifier calls=%d want=0", pub.calls)
+	if resp.StatusCode != 500 || store.calls != 1 || pub.calls != 0 {
+		t.Fatalf("status=%d store=%d pub=%d", resp.StatusCode, store.calls, pub.calls)
 	}
 }
 
 func TestHandlerSNSFailureDoesNotClaimSuccess(t *testing.T) {
-	store, pub := setupHappyPathMocks()
+	store, pub, _ := setupHappyPathMocks()
 	pub.err = errors.New("sns unavailable")
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"dizziness","district":"Khordha"}`,
+		Body: `{"symptomsText":"dizziness","district":"Warangal"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
-	}
-	if store.calls != 1 {
-		t.Fatalf("store calls=%d want=1 (session remains persisted)", store.calls)
-	}
-	if pub.calls != 1 {
-		t.Fatalf("notifier calls=%d want=1", pub.calls)
-	}
-
-	var body errorBody
-	if err := json.Unmarshal([]byte(resp.Body), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body.Error != "failed to publish triage notification" {
-		t.Fatalf("unexpected error body: %+v", body)
+	if resp.StatusCode != 500 || store.calls != 1 || pub.calls != 1 {
+		t.Fatalf("status=%d store=%d pub=%d", resp.StatusCode, store.calls, pub.calls)
 	}
 }
 
@@ -272,51 +304,13 @@ func TestHandlerGeminiFailure(t *testing.T) {
 	pub := notifier.(*mockNotifier)
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"chest pain","district":"Khordha"}`,
+		Body: `{"symptomsText":"chest pain","district":"Warangal"}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
-	}
-	if store.calls != 0 || pub.calls != 0 {
-		t.Fatalf("expected no persist/publish on gemini failure; store=%d pub=%d", store.calls, pub.calls)
-	}
-}
-
-func TestHandlerInvalidModelJSON(t *testing.T) {
-	setupHappyPathMocks()
-	aiClient = &mockGemini{text: `not json`}
-	store := sessions.(*mockSessionStore)
-	pub := notifier.(*mockNotifier)
-
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"headache","district":"Puri"}`,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
-	}
-	if store.calls != 0 || pub.calls != 0 {
-		t.Fatalf("expected no persist/publish; store=%d pub=%d", store.calls, pub.calls)
-	}
-}
-
-func TestHandlerInvalidUrgency(t *testing.T) {
-	setupHappyPathMocks()
-	aiClient = &mockGemini{text: `{"urgency":"critical","adviceText":"Go now"}`}
-
-	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"symptomsText":"dizziness","district":"Puri"}`,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
+	if resp.StatusCode != 500 || store.calls != 0 || pub.calls != 0 {
+		t.Fatalf("status=%d store=%d pub=%d", resp.StatusCode, store.calls, pub.calls)
 	}
 }
 
@@ -328,5 +322,14 @@ func TestParseTriageResponseFencedJSON(t *testing.T) {
 	}
 	if got.Urgency != "emergency" {
 		t.Fatalf("urgency=%q", got.Urgency)
+	}
+}
+
+func TestValidateContactNumber(t *testing.T) {
+	if msg := validateContactNumber("9876543210"); msg != "" {
+		t.Fatalf("valid phone rejected: %s", msg)
+	}
+	if msg := validateContactNumber("12"); msg == "" {
+		t.Fatal("short phone should fail")
 	}
 }

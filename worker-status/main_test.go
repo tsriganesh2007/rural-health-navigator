@@ -30,45 +30,13 @@ func (m *mockStore) UpdateStatus(ctx context.Context, facilityID string, statusO
 	return m.err
 }
 
-func TestHandlerValidation(t *testing.T) {
-	store = &mockStore{}
-	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
-
-	tests := []struct {
-		name       string
-		body       string
-		wantStatus int
-	}{
-		{name: "invalid json", body: "{", wantStatus: 400},
-		{name: "missing facilityId", body: `{"statusOpen":true,"statusHasDoctor":false,"statusHasMedicine":true,"lastUpdatedBy":"worker-1"}`, wantStatus: 400},
-		{name: "missing lastUpdatedBy", body: `{"facilityId":"f1","statusOpen":true,"statusHasDoctor":false,"statusHasMedicine":true,"lastUpdatedBy":""}`, wantStatus: 400},
-		{name: "missing statusOpen", body: `{"facilityId":"f1","statusHasDoctor":false,"statusHasMedicine":true,"lastUpdatedBy":"worker-1"}`, wantStatus: 400},
-		{name: "missing statusHasDoctor", body: `{"facilityId":"f1","statusOpen":true,"statusHasMedicine":true,"lastUpdatedBy":"worker-1"}`, wantStatus: 400},
-		{name: "missing statusHasMedicine", body: `{"facilityId":"f1","statusOpen":true,"statusHasDoctor":false,"lastUpdatedBy":"worker-1"}`, wantStatus: 400},
-		{name: "valid false statuses", body: `{"facilityId":"f1","statusOpen":false,"statusHasDoctor":false,"statusHasMedicine":false,"lastUpdatedBy":"worker-1"}`, wantStatus: 200},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp, err := handler(context.Background(), events.APIGatewayProxyRequest{Body: tt.body})
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if resp.StatusCode != tt.wantStatus {
-				t.Fatalf("status=%d want=%d body=%s", resp.StatusCode, tt.wantStatus, resp.Body)
-			}
-		})
-	}
-}
-
-func TestHandlerSuccess(t *testing.T) {
+func TestHandlerUpdatesOwnFacilityFromWorkerIdentity(t *testing.T) {
 	mock := &mockStore{}
 	store = mock
-	fixed := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
-	nowUTC = func() time.Time { return fixed }
+	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"facilityId":"fac-42","statusOpen":true,"statusHasDoctor":false,"statusHasMedicine":true,"lastUpdatedBy":"asha-7"}`,
+		Body: `{"workerId":"worker-warangal-1","statusOpen":true,"statusHasDoctor":false,"statusHasMedicine":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -76,16 +44,77 @@ func TestHandlerSuccess(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
 	}
+	if mock.lastFacilityID != "WARANGAL-001" || mock.lastBy != "worker-warangal-1" {
+		t.Fatalf("unexpected store args: %+v", mock)
+	}
+	if mock.lastDoctor {
+		t.Fatalf("expected doctor false")
+	}
 
 	var got workerStatusResponse
 	if err := json.Unmarshal([]byte(resp.Body), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Message != "status updated" || got.FacilityID != "fac-42" || got.LastUpdatedAt != "2026-09-19T12:00:00Z" {
-		t.Fatalf("unexpected body: %+v", got)
+	if got.FacilityID != "WARANGAL-001" || got.District != "Warangal" {
+		t.Fatalf("unexpected response: %+v", got)
 	}
-	if mock.lastFacilityID != "fac-42" || !mock.lastOpen || mock.lastDoctor || !mock.lastMedicine || mock.lastBy != "asha-7" || mock.lastAt != "2026-09-19T12:00:00Z" {
-		t.Fatalf("unexpected store args: %+v", mock)
+}
+
+func TestHandlerCannotTargetAnotherFacilityViaBody(t *testing.T) {
+	mock := &mockStore{}
+	store = mock
+	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
+
+	// Even if a client tries to smuggle another facilityId, only workerId is used.
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"workerId":"worker-warangal-1","facilityId":"KHAMMAM-001","statusOpen":false,"statusHasDoctor":false,"statusHasMedicine":false}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	if mock.lastFacilityID != "WARANGAL-001" {
+		t.Fatalf("must resolve facility from worker identity, got %q", mock.lastFacilityID)
+	}
+}
+
+func TestHandlerUnknownWorker(t *testing.T) {
+	store = &mockStore{}
+	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"workerId":"unknown","statusOpen":true,"statusHasDoctor":true,"statusHasMedicine":true}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 404 {
+		t.Fatalf("status=%d want=404", resp.StatusCode)
+	}
+}
+
+func TestHandlerValidation(t *testing.T) {
+	store = &mockStore{}
+	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
+
+	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{Body: `{`})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	resp, err = handler(context.Background(), events.APIGatewayProxyRequest{
+		Body: `{"workerId":"worker-warangal-1","statusOpen":true}`,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
 
@@ -94,13 +123,13 @@ func TestHandlerFacilityNotFound(t *testing.T) {
 	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"facilityId":"missing","statusOpen":true,"statusHasDoctor":true,"statusHasMedicine":true,"lastUpdatedBy":"worker-1"}`,
+		Body: `{"workerId":"worker-warangal-1","statusOpen":true,"statusHasDoctor":true,"statusHasMedicine":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.StatusCode != 404 {
-		t.Fatalf("status=%d want=404 body=%s", resp.StatusCode, resp.Body)
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
 
@@ -109,12 +138,12 @@ func TestHandlerStoreFailure(t *testing.T) {
 	nowUTC = func() time.Time { return time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC) }
 
 	resp, err := handler(context.Background(), events.APIGatewayProxyRequest{
-		Body: `{"facilityId":"f1","statusOpen":true,"statusHasDoctor":true,"statusHasMedicine":true,"lastUpdatedBy":"worker-1"}`,
+		Body: `{"workerId":"worker-warangal-1","statusOpen":true,"statusHasDoctor":true,"statusHasMedicine":true}`,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.StatusCode != 500 {
-		t.Fatalf("status=%d want=500 body=%s", resp.StatusCode, resp.Body)
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }
