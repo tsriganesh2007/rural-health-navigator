@@ -2,13 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
 	"google.golang.org/genai"
 )
 
@@ -46,12 +54,43 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
+type triageSession struct {
+	SessionID    string
+	District     string
+	SymptomsText string
+	Urgency      string
+	AdviceText   string
+	CreatedAt    string
+}
+
+type triageNotification struct {
+	SessionID string `json:"sessionId"`
+	District  string `json:"district"`
+	Urgency   string `json:"urgency"`
+}
+
 // triageGenerator produces model JSON for a triage request (mocked in tests).
 type triageGenerator interface {
 	GenerateTriageJSON(ctx context.Context, req triageRequest) (string, error)
 }
 
-var aiClient triageGenerator
+// sessionStore persists triage sessions (mocked in tests).
+type sessionStore interface {
+	SaveSession(ctx context.Context, session triageSession) error
+}
+
+// notificationPublisher publishes triage notifications (mocked in tests).
+type notificationPublisher interface {
+	PublishTriageNotification(ctx context.Context, note triageNotification) error
+}
+
+var (
+	aiClient   triageGenerator
+	sessions   sessionStore
+	notifier   notificationPublisher
+	nowUTC     = func() time.Time { return time.Now().UTC() }
+	newSession = newSessionID
+)
 
 func main() {
 	apiKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
@@ -64,6 +103,16 @@ func main() {
 		modelID = defaultGeminiModelID
 	}
 
+	tableName := strings.TrimSpace(os.Getenv("TRIAGE_SESSIONS_TABLE_NAME"))
+	if tableName == "" {
+		log.Fatal("TRIAGE_SESSIONS_TABLE_NAME must be set")
+	}
+
+	topicARN := strings.TrimSpace(os.Getenv("TRIAGE_NOTIFICATIONS_TOPIC_ARN"))
+	if topicARN == "" {
+		log.Fatal("TRIAGE_NOTIFICATIONS_TOPIC_ARN must be set")
+	}
+
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,
@@ -72,8 +121,22 @@ func main() {
 		log.Fatalf("failed to create Gemini client: %v", err)
 	}
 
+	cfg, err := config.LoadDefaultConfig(context.Background())
+	if err != nil {
+		log.Fatalf("failed to load AWS config: %v", err)
+	}
+
 	aiClient = &geminiGenerator{client: client, modelID: modelID}
-	log.Printf("triage lambda starting: model=%q", modelID)
+	sessions = &dynamoSessionStore{
+		client:    dynamodb.NewFromConfig(cfg),
+		tableName: tableName,
+	}
+	notifier = &snsNotifier{
+		client:   sns.NewFromConfig(cfg),
+		topicARN: topicARN,
+	}
+
+	log.Printf("triage lambda starting: model=%q table=%q", modelID, tableName)
 	lambda.Start(handler)
 }
 
@@ -99,7 +162,7 @@ func (g *geminiGenerator) GenerateTriageJSON(ctx context.Context, req triageRequ
 
 	userMessage := "District: " + req.District + "\nSymptoms: " + req.SymptomsText
 
-	config := &genai.GenerateContentConfig{
+	genCfg := &genai.GenerateContentConfig{
 		SystemInstruction: &genai.Content{
 			Parts: []*genai.Part{{Text: systemPrompt}},
 		},
@@ -107,7 +170,7 @@ func (g *geminiGenerator) GenerateTriageJSON(ctx context.Context, req triageRequ
 		ResponseSchema:   schema,
 	}
 
-	resp, err := g.client.Models.GenerateContent(ctx, g.modelID, genai.Text(userMessage), config)
+	resp, err := g.client.Models.GenerateContent(ctx, g.modelID, genai.Text(userMessage), genCfg)
 	if err != nil {
 		return "", err
 	}
@@ -120,6 +183,43 @@ func (g *geminiGenerator) GenerateTriageJSON(ctx context.Context, req triageRequ
 		return "", errInvalidModelOutput("empty model text")
 	}
 	return text, nil
+}
+
+type dynamoSessionStore struct {
+	client    *dynamodb.Client
+	tableName string
+}
+
+func (d *dynamoSessionStore) SaveSession(ctx context.Context, session triageSession) error {
+	_, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(d.tableName),
+		Item: map[string]types.AttributeValue{
+			"sessionId":    &types.AttributeValueMemberS{Value: session.SessionID},
+			"district":     &types.AttributeValueMemberS{Value: session.District},
+			"symptomsText": &types.AttributeValueMemberS{Value: session.SymptomsText},
+			"urgency":      &types.AttributeValueMemberS{Value: session.Urgency},
+			"adviceText":   &types.AttributeValueMemberS{Value: session.AdviceText},
+			"createdAt":    &types.AttributeValueMemberS{Value: session.CreatedAt},
+		},
+	})
+	return err
+}
+
+type snsNotifier struct {
+	client   *sns.Client
+	topicARN string
+}
+
+func (n *snsNotifier) PublishTriageNotification(ctx context.Context, note triageNotification) error {
+	body, err := json.Marshal(note)
+	if err != nil {
+		return err
+	}
+	_, err = n.client.Publish(ctx, &sns.PublishInput{
+		TopicArn: aws.String(n.topicARN),
+		Message:  aws.String(string(body)),
+	})
+	return err
 }
 
 func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
@@ -148,6 +248,30 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (events
 	if err != nil {
 		log.Printf("invalid model response: reason=%v", err)
 		return jsonResponse(500, errorBody{Error: "invalid triage response from model"})
+	}
+
+	session := triageSession{
+		SessionID:    newSession(),
+		District:     req.District,
+		SymptomsText: req.SymptomsText,
+		Urgency:      parsed.Urgency,
+		AdviceText:   parsed.AdviceText,
+		CreatedAt:    nowUTC().Format(time.RFC3339),
+	}
+
+	if err := sessions.SaveSession(ctx, session); err != nil {
+		log.Printf("triage session persist failed: sessionId=%q err=%v", session.SessionID, err)
+		return jsonResponse(500, errorBody{Error: "failed to save triage session"})
+	}
+
+	note := triageNotification{
+		SessionID: session.SessionID,
+		District:  session.District,
+		Urgency:   session.Urgency,
+	}
+	if err := notifier.PublishTriageNotification(ctx, note); err != nil {
+		log.Printf("triage notification publish failed: sessionId=%q err=%v", session.SessionID, err)
+		return jsonResponse(500, errorBody{Error: "failed to publish triage notification"})
 	}
 
 	return jsonResponse(200, parsed)
@@ -205,6 +329,14 @@ func jsonResponse(status int, body any) (events.APIGatewayProxyResponse, error) 
 		Headers:    map[string]string{"Content-Type": "application/json"},
 		Body:       string(b),
 	}, nil
+}
+
+func newSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return hex.EncodeToString([]byte(nowUTC().Format(time.RFC3339Nano)))
+	}
+	return hex.EncodeToString(b)
 }
 
 type modelOutputError struct {

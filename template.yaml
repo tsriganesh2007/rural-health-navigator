@@ -37,6 +37,24 @@ Resources:
         - AttributeName: facilityId
           KeyType: HASH
 
+  TriageSessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: TriageSessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: sessionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sessionId
+          KeyType: HASH
+
+  TriageNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-triage-notifications'
+      DisplayName: Rural Health Navigator triage notifications
+
   TriageFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -51,6 +69,19 @@ Resources:
         Variables:
           GEMINI_MODEL_ID: gemini-3.5-flash-lite
           GEMINI_API_KEY: !Ref GeminiApiKey
+          TRIAGE_SESSIONS_TABLE_NAME: !Ref TriageSessionsTable
+          TRIAGE_NOTIFICATIONS_TOPIC_ARN: !Ref TriageNotificationTopic
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt TriageSessionsTable.Arn
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref TriageNotificationTopic
       Events:
         Triage:
           Type: Api
@@ -115,6 +146,12 @@ Outputs:
   FacilitiesTableName:
     Description: Facilities DynamoDB table name
     Value: !Ref FacilitiesTable
+  TriageSessionsTableName:
+    Description: TriageSessions DynamoDB table name
+    Value: !Ref TriageSessionsTable
+  TriageNotificationTopicArn:
+    Description: SNS topic ARN for triage session notifications
+    Value: !Ref TriageNotificationTopic
   TriageFunctionIamRole:
     Description: Implicit IAM Role created for Triage function
     Value: !GetAtt TriageFunctionRole.Arn
