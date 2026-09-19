@@ -143,6 +143,33 @@ Resources:
             Path: /worker/queue
             Method: GET
 
+  WorkerAckFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+    Properties:
+      CodeUri: worker-ack/
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          TRIAGE_SESSIONS_TABLE_NAME: !Ref TriageSessionsTable
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt TriageSessionsTable.Arn
+      Events:
+        WorkerAck:
+          Type: Api
+          Properties:
+            Path: /worker/ack
+            Method: POST
+
   ApplicationResourceGroup:
     Type: AWS::ResourceGroups::Group
     Properties:
@@ -167,6 +194,9 @@ Outputs:
   WorkerQueueAPI:
     Description: API Gateway endpoint URL for Prod environment for GET /worker/queue
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/worker/queue/"
+  WorkerAckAPI:
+    Description: API Gateway endpoint URL for Prod environment for POST /worker/ack
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/worker/ack/"
   TriageFunction:
     Description: Triage Lambda Function ARN
     Value: !GetAtt TriageFunction.Arn
@@ -176,6 +206,9 @@ Outputs:
   WorkerQueueFunction:
     Description: Worker queue Lambda Function ARN
     Value: !GetAtt WorkerQueueFunction.Arn
+  WorkerAckFunction:
+    Description: Worker ack Lambda Function ARN
+    Value: !GetAtt WorkerAckFunction.Arn
   FacilitiesTableName:
     Description: Facilities DynamoDB table name
     Value: !Ref FacilitiesTable
