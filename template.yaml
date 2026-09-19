@@ -3,20 +3,29 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   rural-health-navigator
 
-  Sample SAM Template for rural-health-navigator
+  Rural Health Navigator SAM application — POST /triage MVP
 
-# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+# Set GEMINI_API_KEY at deploy time (parameter override, console, or Secrets Manager).
+# Never commit a real API key.
+Parameters:
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    Default: REPLACE_WITH_GEMINI_API_KEY
+    Description: >
+      Gemini API key for triage. Override at deploy time.
+      Do not leave the placeholder in production.
+
 Globals:
   Function:
-    Timeout: 5
-    MemorySize: 128
-
-    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
+    Timeout: 30
+    MemorySize: 256
     LoggingConfig:
       LogFormat: JSON
+
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  TriageFunction:
+    Type: AWS::Serverless::Function
     Metadata:
       BuildMethod: go1.x
     Properties:
@@ -24,16 +33,17 @@ Resources:
       Handler: bootstrap
       Runtime: provided.al2023
       Architectures:
-      - x86_64
-      Events:
-        CatchAll:
-          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
-          Properties:
-            Path: /hello
-            Method: GET
-      Environment: # More info about Env Vars: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#environment-object
+        - x86_64
+      Environment:
         Variables:
-          PARAM1: VALUE
+          GEMINI_MODEL_ID: gemini-3.5-flash-lite
+          GEMINI_API_KEY: !Ref GeminiApiKey
+      Events:
+        Triage:
+          Type: Api
+          Properties:
+            Path: /triage
+            Method: POST
 
   ApplicationResourceGroup:
     Type: AWS::ResourceGroups::Group
@@ -48,17 +58,14 @@ Resources:
       ResourceGroupName:
         Ref: ApplicationResourceGroup
       AutoConfigurationEnabled: 'true'
+
 Outputs:
-  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
-  # Find out more about other implicit resources you can reference within SAM
-  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
-  HelloWorldAPI:
-    Description: API Gateway endpoint URL for Prod environment for First 
-      Function
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/hello/"
-  HelloWorldFunction:
-    Description: First Lambda Function ARN
-    Value: !GetAtt HelloWorldFunction.Arn
-  HelloWorldFunctionIamRole:
-    Description: Implicit IAM Role created for Hello World function
-    Value: !GetAtt HelloWorldFunctionRole.Arn
+  TriageAPI:
+    Description: API Gateway endpoint URL for Prod environment for POST /triage
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/triage/"
+  TriageFunction:
+    Description: Triage Lambda Function ARN
+    Value: !GetAtt TriageFunction.Arn
+  TriageFunctionIamRole:
+    Description: Implicit IAM Role created for Triage function
+    Value: !GetAtt TriageFunctionRole.Arn

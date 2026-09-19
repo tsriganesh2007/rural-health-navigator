@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: "rural-health-navigator\nRural Health Navigator SAM application \u2014\
+  \ POST /triage MVP\n"
+Parameters:
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+    Default: REPLACE_WITH_GEMINI_API_KEY
+    Description: 'Gemini API key for triage. Override at deploy time. Do not leave
+      the placeholder in production.
+
+      '
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 256
+    LoggingConfig:
+      LogFormat: JSON
+Resources:
+  TriageFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: go1.x
+      SamResourceId: TriageFunction
+    Properties:
+      CodeUri: TriageFunction
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures:
+      - x86_64
+      Environment:
+        Variables:
+          GEMINI_MODEL_ID: gemini-3.5-flash-lite
+          GEMINI_API_KEY:
+            Ref: GeminiApiKey
+      Events:
+        Triage:
+          Type: Api
+          Properties:
+            Path: /triage
+            Method: POST
+  ApplicationResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name:
+        Fn::Sub: ApplicationInsights-SAM-${AWS::StackName}
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+  ApplicationInsightsMonitoring:
+    Type: AWS::ApplicationInsights::Application
+    Properties:
+      ResourceGroupName:
+        Ref: ApplicationResourceGroup
+      AutoConfigurationEnabled: 'true'
+Outputs:
+  TriageAPI:
+    Description: API Gateway endpoint URL for Prod environment for POST /triage
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/Prod/triage/
+  TriageFunction:
+    Description: Triage Lambda Function ARN
+    Value:
+      Fn::GetAtt:
+      - TriageFunction
+      - Arn
+  TriageFunctionIamRole:
+    Description: Implicit IAM Role created for Triage function
+    Value:
+      Fn::GetAtt:
+      - TriageFunctionRole
+      - Arn
